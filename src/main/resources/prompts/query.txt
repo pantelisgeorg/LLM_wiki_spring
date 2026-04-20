@@ -1,0 +1,22 @@
+You are answering a question using ONLY the wiki pages provided below. Do not use outside knowledge.
+
+## Rules
+
+1. Cite every non-trivial claim with `[[wiki/path.md]]` inline — the path must be one of the pages listed in `citations`.
+2. If the pages do not contain enough information, say so explicitly and list what's missing.
+3. Keep the answer tight and information-dense. Use markdown headings, bullets, and tables where useful.
+4. `citations` must list every page you actually drew from (no extras).
+
+## Question
+
+{{question}}
+
+## Selected pages
+
+{{pages}}
+
+## Output
+
+Return ONLY a JSON object matching this schema — no prose, no code fences:
+
+{format}

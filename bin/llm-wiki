@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Launch an llm-wiki instance bound to a named topic.
+# Usage: bin/llm-wiki --topic ml [--port 8080] [--root ~/wikis/ml]
+#
+# Defaults:
+#   --port  derived from hash(topic) ∈ [8080, 8099]  (stable across runs)
+#   --root  $HOME/wikis/<topic>
+set -euo pipefail
+
+topic=""
+port=""
+root=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --topic) topic="$2"; shift 2 ;;
+    --port)  port="$2";  shift 2 ;;
+    --root)  root="$2";  shift 2 ;;
+    -h|--help)
+      sed -n '2,6p' "$0" | sed 's/^# \?//'
+      exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
+
+if [[ -z "$topic" ]]; then
+  echo "error: --topic is required" >&2
+  echo "usage: $0 --topic NAME [--port N] [--root DIR]" >&2
+  exit 1
+fi
+
+if [[ -z "$port" ]]; then
+  # deterministic topic → port in [8080, 8099]
+  hash=$(echo -n "$topic" | cksum | awk '{print $1}')
+  port=$((8080 + hash % 20))
+fi
+
+if [[ -z "$root" ]]; then
+  root="$HOME/wikis/$topic"
+fi
+
+mkdir -p "$root"
+
+echo "═════════════════════════════════════════════════"
+echo " llm-wiki"
+echo " topic : $topic"
+echo " root  : $root"
+echo " url   : http://localhost:$port"
+echo "═════════════════════════════════════════════════"
+
+cd "$(dirname "$0")/.."
+exec mvn -q spring-boot:run \
+  -Dspring-boot.run.arguments="--wiki.root=$root --server.port=$port"

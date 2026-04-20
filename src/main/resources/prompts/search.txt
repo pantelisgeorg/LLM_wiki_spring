@@ -1,0 +1,17 @@
+Given the wiki index below and a question, return up to {{maxPages}} page paths that are most likely to contain the answer. Only include paths that actually appear in the index. Return only the JSON object.
+
+## Index
+
+```
+{{index}}
+```
+
+## Question
+
+{{question}}
+
+## Output
+
+Return ONLY a JSON object matching this schema — no prose, no code fences:
+
+{format}

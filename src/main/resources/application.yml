@@ -1,0 +1,35 @@
+server:
+  port: 8080
+
+wiki:
+  root: ${user.home}/llm-wiki
+  search:
+    max-pages: 8
+  ingest:
+    chunk-gap-ms: 3000
+    reset-every-n-chunks: 0
+    reset-command: "lms unload --all && lms load qwen3.5-4b --context-length 12288 --parallel 1 --gpu off -y"
+
+spring:
+  ai:
+    retry:
+      max-attempts: 1
+    openai:
+      base-url: http://localhost:1234
+      api-key: lm-studio
+      chat:
+        options:
+          model: qwen3.5-4b
+          temperature: 0.2
+          max-tokens: 7000
+  mvc:
+    async:
+      request-timeout: -1
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+logging:
+  level:
+    com.wiki: DEBUG

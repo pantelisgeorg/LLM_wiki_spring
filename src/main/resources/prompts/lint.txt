@@ -1,0 +1,36 @@
+You are auditing a personal knowledge wiki for quality problems. Report only real issues you can justify from the inputs.
+
+## Categories
+
+- `orphan`     — an entity or concept page (under `wiki/entities/` or `wiki/concepts/`) exists but nothing links to it, **or** an index entry points at a missing page. Do **NOT** flag pages under `wiki/sources/` as orphans — source summaries are a ledger of ingested material and are expected to have few or no incoming links.
+- `contradiction` — two pages make incompatible claims about the same thing
+- `gap`        — the index or cross-links imply a page that doesn't exist
+- `stale`      — a claim is older than its sources would warrant, or a source was superseded by a later one in the log
+
+## Inputs
+
+### Pages actually on disk (authoritative)
+
+```
+{{pages}}
+```
+
+Any path not in this list does NOT exist, regardless of what the index or body text claims.
+
+### Index
+
+```
+{{index}}
+```
+
+### Log (most recent last)
+
+```
+{{log}}
+```
+
+## Output
+
+Return ONLY a JSON object matching this schema — no prose, no code fences. If nothing is wrong, return `{"issues": []}`.
+
+{format}
