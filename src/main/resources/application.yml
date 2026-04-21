@@ -22,10 +22,10 @@ spring:
     openai:
       base-url: http://localhost:8888
 
-      api-key: sk-unsloth-e8f6e0d5916375aa6d245f0ab92346c8
+      api-key: sk-unsloth-0c50d52d51314ab3eac69b05da0b41f3
       chat:
         options:
-          model: unsloth/Qwen3-16B-A3B-GGUF
+          model: DeepSeek-R1-0528-Qwen3-8B-GGUF
           temperature: 0.2
           max-tokens: 20000
   mvc:
