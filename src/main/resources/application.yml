@@ -22,12 +22,12 @@ spring:
     openai:
       base-url: http://localhost:8888
 
-      api-key: sk-unsloth-0c50d52d51314ab3eac69b05da0b41f3
+      api-key:  sk-unsloth-113da9d10b168cca34e7a183c42f06bd
       chat:
         options:
-          model: DeepSeek-R1-0528-Qwen3-8B-GGUF
+          model: unsloth/gemma-4-E4B-it-GGUF
           temperature: 0.2
-          max-tokens: 20000
+          max-tokens: 800
   mvc:
     async:
       request-timeout: -1
