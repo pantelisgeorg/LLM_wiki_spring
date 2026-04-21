@@ -22,12 +22,12 @@ spring:
     openai:
       base-url: http://localhost:8888
 
-      api-key: Unsloth Studio
+      api-key: ${OPENAI_API_KEY:}
       chat:
         options:
-          model: qwen3-16b-A3B-GGUF
+          model: unsloth/Qwen3-16B-A3B-GGUF
           temperature: 0.2
-          max-tokens: 7000
+          max-tokens: 2000
   mvc:
     async:
       request-timeout: -1
