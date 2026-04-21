@@ -18,6 +18,7 @@ Working end-to-end:
 - **Outline / TOC** — auto-extracted `##`/`###` headings pinned to the top of each page
 - **Multi-topic launcher** — `bin/llm-wiki --topic NAME` runs one isolated wiki per topic on a stable port
 - **Frontend** — 3-pane UI with SSE streaming, renders markdown, click-to-navigate `[[wiki/…]]` links
+- **QMD search** *(optional)* — hybrid BM25 + vector + LLM rerank via the `qmd` MCP HTTP daemon; **Fetch** button also drives `get` (by path or `#docid`) and `multi-get` (by glob). Header badge shows `qmd daemon: up • N docs indexed` or `qmd daemon: down`. If the daemon is absent the badge turns red but ingest/query/lint/graph still work
 
 Tested against: LM Studio 0.3.x serving `qwen3.5-4b` on `localhost:1234` (CPU-only, 15 GB RAM). Ollama with `gemma4:e4b` also works (swap the starter — see Configuration).
 
@@ -51,6 +52,7 @@ Point Obsidian at `~/llm-wiki/` to browse. The app owns `wiki/`; the user owns `
 src/main/java/com/wiki/
 ├── LlmWikiApplication.java       ← Spring Boot main
 ├── WikiController.java           ← REST + SSE endpoints
+├── QmdController.java            ← /api/qmd/* — proxies to the qmd MCP HTTP daemon
 ├── service/
 │   ├── RawSourceLoader.java      ← md/pdf/url/image → plain text
 │   ├── Chunker.java              ← splits long text on ## / paragraph boundaries
@@ -58,6 +60,7 @@ src/main/java/com/wiki/
 │   ├── WikiSearch.java           ← "ask LLM which pages from the index"
 │   ├── WikiAgent.java            ← orchestrates ingest/query/lint prompts
 │   ├── LinkGraph.java            ← parses [[wiki/…]] refs → outgoing/incoming maps
+│   ├── QmdClient.java            ← MCP session lifecycle + query/get/multi-get/status
 │   └── PromptLoader.java         ← loads + caches classpath prompts
 └── dto/
     ├── WikiEdit.java             ← { path, action: upsert|append, body }
@@ -91,6 +94,44 @@ bin/
 - Java 21+ (tested on Java 25)
 - Maven 3.8+
 - An OpenAI-compatible LLM server listening on `http://localhost:1234`. Default config assumes **LM Studio** with `mistralai/ministral-3-3b` loaded. To use Ollama instead, see Configuration.
+- *Optional:* **qmd** for the QMD search / Fetch panel:
+  ```bash
+  npm install -g @tobilu/qmd                   # needs Node ≥ 20 (nvm recommended)
+  qmd collection add ~/llm-wiki/wiki --name wiki
+  qmd embed                                     # one-time: build the vector index
+  qmd mcp --http --daemon                       # starts the HTTP server on :8181
+  ```
+  The app polls `http://localhost:8181/mcp` via the `qmd.url` setting and shows a green badge in the header when the daemon is reachable. If you skip this, the rest of the app still works — the QMD button / badge just won't be useful.
+
+### On a fresh machine (end-to-end)
+
+Going from zero to a running wiki with qmd search:
+
+```bash
+# 1. Install Java 21+ and Maven (via your package manager)
+#    Debian/Ubuntu: sudo apt install openjdk-21-jdk maven
+#    macOS:         brew install openjdk@21 maven
+
+# 2. Clone and do one boot to seed ~/llm-wiki/
+git clone <this-repo> llm-wiki && cd llm-wiki
+mvn spring-boot:run                              # Ctrl-C once you see "Started LlmWikiApplication"
+
+# 3. Start your LLM backend. Default config expects LM Studio on :1234
+#    with a model whose name matches application.yml (currently qwen3.5-4b).
+#    Either load that exact model, or edit spring.ai.openai.chat.options.model.
+#    (Ollama? See "Swap to Ollama" in Configuration.)
+
+# 4. Optional: qmd for hybrid search (Node ≥ 20; nvm recommended)
+npm install -g @tobilu/qmd
+qmd collection add ~/llm-wiki/wiki --name wiki   # wiki/ must exist — that's why step 2 runs first
+qmd embed                                        # one-time index build
+
+# 5. Start the app and open the UI — it auto-starts the qmd daemon on boot
+mvn spring-boot:run
+open http://localhost:8080                       # Linux: xdg-open
+```
+
+On subsequent boots, only steps 3 and 5 are needed. The Spring app probes `http://localhost:8181/health` on startup and shells out `qmd mcp --http --daemon` via a login shell if it's down (disable with `qmd.auto-start: false`; if it fails, the header badge goes red and a `[Start]` link next to it retries manually). The `~/llm-wiki/` folder is persisted across runs — `git init` inside it if you want version control.
 
 ### Run
 
@@ -122,7 +163,7 @@ Port is a deterministic hash of the topic name, stable across runs. Override wit
 
 ## Using it
 
-The UI has one shared input at the top and three buttons.
+The UI has one shared input at the top and a row of action buttons: **Ingest · Query · QMD · Fetch · Lint · Graph · Clear**.
 
 ### Ingest
 
@@ -182,6 +223,18 @@ Lint currently does **not** read page bodies — that kept the prompt under LM S
 
 Each issue whose `page` field is a valid `wiki/…/*.md` path gets a **Delete** button in the preview. Click it to remove the file *and* any line in `wiki/index.md` that references the path. Reserved pages (`wiki/index.md`, `wiki/log.md`) are never deletable.
 
+### QMD (hybrid search) and Fetch
+
+Both require the `qmd mcp --http --daemon` server from Prereqs. The header badge shows status: `qmd daemon: up • N docs indexed` (green) or `qmd daemon: down` (red, with a tooltip explaining how to start it).
+
+- **QMD** — type a query → hybrid search (BM25 `lex` + vector `vec` sub-queries, combined via RRF + LLM rerank). Results render in the preview pane as score · title · path · snippet. Clicking a result opens the page via the existing `/api/wiki/page` endpoint.
+- **Fetch** — routes by input shape:
+  - contains `*` or `?` → `multi_get` → list of matched docs (e.g. `wiki/entities/*.md`)
+  - starts with `#` → `get` by docid (e.g. `#84f33c` from a previous QMD result)
+  - otherwise → `get` by file path (e.g. `wiki/entities/andrej-karpathy.md`)
+
+qmd is deliberately *not* bundled: the Java app treats it as a pre-installed prerequisite and talks to it over plain HTTP. That keeps the distribution a pure Java artifact and lets qmd update independently.
+
 ### Graph, backlinks, search, outline
 
 - **Graph** — top-right *Graph* button opens a full-screen force-directed graph. Nodes colored by type (entity=blue, concept=purple, source=green), sized by link degree. Click any node to jump to its page. Esc closes.
@@ -208,9 +261,19 @@ curl -s "http://localhost:8080/api/wiki/page?path=wiki/entities/obsidian.md"
 curl -s "http://localhost:8080/api/wiki/backlinks?path=wiki/entities/obsidian.md"
 curl -s http://localhost:8080/api/wiki/graph | python3 -m json.tool | head
 curl -s -X DELETE "http://localhost:8080/api/wiki/page?path=wiki/entities/orphan.md"
+
+# qmd-backed endpoints (require qmd mcp --http --daemon on :8181)
+curl -s http://localhost:8080/api/qmd/status
+curl -s -X POST http://localhost:8080/api/qmd/query \
+     -H 'Content-Type: application/json' \
+     -d '{"query":"karpathy","limit":5}'
+curl -s "http://localhost:8080/api/qmd/get?file=wiki/entities/andrej-karpathy.md"
+curl -s -X POST http://localhost:8080/api/qmd/multi-get \
+     -H 'Content-Type: application/json' \
+     -d '{"pattern":"wiki/entities/*.md"}'
 ```
 
-All action endpoints are SSE; use `curl -N` to avoid buffering.
+All `/api/ingest|query|lint` endpoints are SSE; use `curl -N` to avoid buffering. The `/api/qmd/*` endpoints are plain JSON.
 
 ---
 
@@ -219,6 +282,11 @@ All action endpoints are SSE; use `curl -N` to avoid buffering.
 `src/main/resources/application.yml`:
 
 ```yaml
+qmd:
+  url: http://localhost:8181/mcp   # qmd MCP HTTP daemon; override if you run it elsewhere
+  auto-start: true                 # probe /health on boot; shell out start-command if down
+  start-command: "QMD_LLAMA_GPU=off qmd mcp --http --daemon"
+
 wiki:
   root: ${user.home}/llm-wiki
   search:

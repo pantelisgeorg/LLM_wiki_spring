@@ -285,13 +285,13 @@ let inflight = false;
 function lockActions() {
   if (inflight) return;
   inflight = true;
-  for (const id of ["btn-ingest", "btn-query", "btn-lint"]) {
+  for (const id of ["btn-ingest", "btn-query", "btn-qmd", "btn-fetch", "btn-lint"]) {
     const b = $(id); if (b) b.disabled = true;
   }
 }
 function unlockActions() {
   inflight = false;
-  for (const id of ["btn-ingest", "btn-query", "btn-lint"]) {
+  for (const id of ["btn-ingest", "btn-query", "btn-qmd", "btn-fetch", "btn-lint"]) {
     const b = $(id); if (b) b.disabled = false;
   }
 }
@@ -388,6 +388,72 @@ $("btn-query").onclick = () => {
   runSse("/api/query", {question: v});
 };
 $("btn-lint").onclick = () => runSse("/api/lint", null);
+$("btn-qmd").onclick = runQmd;
+$("btn-fetch").onclick = runFetch;
+
+async function runQmd() {
+  const q = input.value.trim();
+  if (!q) { appendEvent("error", "type a search query", "error"); return; }
+  if (inflight) return;
+  out.innerHTML = "";
+  appendEvent("start", "/api/qmd/query");
+  lockActions();
+  try {
+    const res = await fetch("/api/qmd/query", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({query: q})
+    });
+    const body = await res.json();
+    if (!res.ok) { appendEvent("error", body.error || ("HTTP " + res.status), "error"); return; }
+    const results = (body && body.results) || [];
+    appendEvent("result", results.length + " hits");
+    renderQmdResults(q, results);
+  } catch (e) {
+    appendEvent("error", String(e), "error");
+  } finally {
+    unlockActions();
+  }
+}
+
+function renderQmdResults(q, results) {
+  preview.innerHTML = "";
+  const h = document.createElement("h1");
+  h.textContent = `QMD: ${q}`;
+  preview.appendChild(h);
+  if (!results.length) {
+    const p = document.createElement("p");
+    p.innerHTML = "<em class=\"status\">No hits.</em>";
+    preview.appendChild(p);
+    return;
+  }
+  const ul = document.createElement("ul");
+  ul.className = "qmd-results";
+  for (const r of results) {
+    const li = document.createElement("li");
+    const score = document.createElement("span");
+    score.className = "score";
+    score.textContent = Math.round((r.score || 0) * 100) + "%";
+    const a = document.createElement("a");
+    a.href = "#";
+    a.textContent = r.title || r.file;
+    a.onclick = e => { e.preventDefault(); openPage(r.file); };
+    const pathSpan = document.createElement("span");
+    pathSpan.className = "path";
+    pathSpan.textContent = r.file;
+    li.appendChild(score);
+    li.appendChild(a);
+    li.appendChild(pathSpan);
+    if (r.snippet) {
+      const s = document.createElement("div");
+      s.className = "snippet";
+      s.textContent = r.snippet;
+      li.appendChild(s);
+    }
+    ul.appendChild(li);
+  }
+  preview.appendChild(ul);
+}
 $("btn-clear").onclick = () => {
   preview.innerHTML = `<em class="status">click a page or citation</em>`;
   currentPage = null;
@@ -454,3 +520,138 @@ refreshTree().then(() => {
   const initial = decodeURIComponent(location.hash.replace(/^#/, ""));
   if (initial) openPage(initial, {fromHash: true});
 });
+
+refreshQmdStatus();
+
+async function runFetch() {
+  const v = input.value.trim();
+  if (!v) { appendEvent("error", "enter a path, docid, or glob", "error"); return; }
+  if (inflight) return;
+  const isGlob = v.includes("*") || v.includes("?");
+  out.innerHTML = "";
+  appendEvent("start", isGlob ? `/api/qmd/multi-get ${v}` : `/api/qmd/get ${v}`);
+  lockActions();
+  try {
+    if (isGlob) {
+      const res = await fetch("/api/qmd/multi-get", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({pattern: v})
+      });
+      const body = await res.json();
+      if (!res.ok) { appendEvent("error", body.error || ("HTTP " + res.status), "error"); return; }
+      const items = Array.isArray(body) ? body : [];
+      appendEvent("result", items.length + " docs");
+      renderMultiGet(v, items);
+    } else {
+      const res = await fetch(`/api/qmd/get?file=${encodeURIComponent(v)}`);
+      const body = await res.json();
+      if (!res.ok) { appendEvent("error", body.error || ("HTTP " + res.status), "error"); return; }
+      appendEvent("result", body.uri || v);
+      renderSingleDoc(body);
+    }
+  } catch (e) {
+    appendEvent("error", String(e), "error");
+  } finally {
+    unlockActions();
+  }
+}
+
+/** Strip the `qmd://` scheme from a resource URI to get a wiki-relative path. */
+function qmdUriToPath(uri) {
+  if (!uri) return "";
+  return uri.startsWith("qmd://") ? uri.slice("qmd://".length) : uri;
+}
+
+function renderSingleDoc(doc) {
+  const path = qmdUriToPath(doc.uri);
+  const header = `<div class="status">qmd: ${path}</div>`;
+  const body = doc.text ? marked.parse(preprocessWikilinks(doc.text)) : "<em class=\"status\">empty</em>";
+  preview.innerHTML = header + body;
+  wireWikiLinks(preview);
+}
+
+function renderMultiGet(pattern, items) {
+  preview.innerHTML = "";
+  const h = document.createElement("h1");
+  h.textContent = `QMD glob: ${pattern}`;
+  preview.appendChild(h);
+  if (!items.length) {
+    const p = document.createElement("p");
+    p.innerHTML = "<em class=\"status\">No matches.</em>";
+    preview.appendChild(p);
+    return;
+  }
+  const ul = document.createElement("ul");
+  ul.className = "qmd-results";
+  for (const it of items) {
+    const path = qmdUriToPath(it.uri);
+    const title = extractTitle(it.text) || path;
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = "#";
+    a.textContent = title;
+    a.onclick = e => { e.preventDefault(); openPage(path); };
+    const pathSpan = document.createElement("span");
+    pathSpan.className = "path";
+    pathSpan.textContent = path;
+    li.appendChild(a);
+    li.appendChild(pathSpan);
+    ul.appendChild(li);
+  }
+  preview.appendChild(ul);
+}
+
+function extractTitle(md) {
+  if (!md) return null;
+  const m = md.match(/^#\s+(.+?)\s*$/m);
+  return m ? m[1] : null;
+}
+
+async function refreshQmdStatus() {
+  const el = $("qmd-status");
+  if (!el) return;
+  try {
+    const res = await fetch("/api/qmd/status");
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const s = await res.json();
+    const n = s.totalDocuments ?? "?";
+    el.innerHTML = "";
+    el.textContent = `qmd daemon: up • ${n} docs indexed`;
+    el.style.color = "var(--source)";
+    const cols = (s.collections || []).map(c => `${c.name} (${c.documents} docs @ ${c.path})`).join("\n");
+    el.title = `qmd MCP HTTP daemon reachable\nCollections:\n${cols || "—"}`;
+  } catch (e) {
+    el.innerHTML = "";
+    const txt = document.createElement("span");
+    txt.textContent = "qmd daemon: down ";
+    el.appendChild(txt);
+    const btn = document.createElement("a");
+    btn.href = "#";
+    btn.textContent = "[Start]";
+    btn.style.color = "var(--accent)";
+    btn.onclick = ev => { ev.preventDefault(); startQmdDaemon(btn); };
+    el.appendChild(btn);
+    el.style.color = "var(--err)";
+    el.title = `qmd MCP HTTP daemon unreachable\nClick [Start] to launch it, or run: qmd mcp --http --daemon\n\n${e}`;
+  }
+}
+
+async function startQmdDaemon(btn) {
+  btn.textContent = "[starting…]";
+  btn.style.pointerEvents = "none";
+  try {
+    const res = await fetch("/api/qmd/start", {method: "POST"});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      btn.textContent = "[start failed]";
+      btn.title = body.error || ("HTTP " + res.status);
+      return;
+    }
+  } catch (e) {
+    btn.textContent = "[start failed]";
+    btn.title = String(e);
+    return;
+  }
+  refreshQmdStatus();
+}

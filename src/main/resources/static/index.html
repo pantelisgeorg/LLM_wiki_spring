@@ -56,6 +56,15 @@
   .backlinks a:hover { text-decoration: underline; }
   .backlinks.empty { color: var(--muted); font-style: italic; }
 
+  .qmd-results { list-style: none; padding-left: 0; margin: 8px 0; }
+  .qmd-results li { padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .qmd-results .score { color: var(--muted); font-variant-numeric: tabular-nums; margin-right: 8px; }
+  .qmd-results .path { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  .qmd-results a { color: var(--accent); text-decoration: none; }
+  .qmd-results a:hover { text-decoration: underline; }
+  .qmd-results .snippet { color: var(--muted); font-size: 12px; margin-top: 4px; white-space: pre-wrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
   .status { color: var(--muted); }
   .error { color: var(--err); }
   .event { margin: 2px 0; }
@@ -85,9 +94,12 @@
                   border: 1px solid var(--border); border-radius: 4px;">
     <button id="btn-ingest">Ingest</button>
     <button id="btn-query">Query</button>
+    <button id="btn-qmd" title="Search the wiki via qmd (local hybrid BM25 + vector + rerank)">QMD</button>
+    <button id="btn-fetch" title="Fetch via qmd: glob (e.g. wiki/entities/*.md), path, or docid (#abc123)">Fetch</button>
     <button id="btn-lint">Lint</button>
     <button id="btn-graph">Graph</button>
     <button id="btn-clear" title="Clear the right preview panel">Clear</button>
+    <span id="qmd-status" class="status" title="qmd MCP HTTP daemon status" style="font-size:12px; margin-left:auto;">qmd daemon: …</span>
   </header>
   <main>
     <div id="tree" class="col">

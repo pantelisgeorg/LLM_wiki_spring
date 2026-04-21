@@ -1,6 +1,11 @@
 server:
   port: 8080
 
+qmd:
+  url: http://localhost:8181/mcp
+  auto-start: true                     # probe /health on boot; if down, shell out start-command
+  start-command: "QMD_LLAMA_GPU=off qmd mcp --http --daemon"
+
 wiki:
   root: ${user.home}/llm-wiki
   search:
