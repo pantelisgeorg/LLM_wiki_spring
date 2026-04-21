@@ -13,18 +13,19 @@ wiki:
   ingest:
     chunk-gap-ms: 3000
     reset-every-n-chunks: 0
-    reset-command: "lms unload --all && lms load qwen3.5-4b --context-length 12288 --parallel 1 --gpu off -y"
+    reset-command: ""
 
 spring:
   ai:
     retry:
       max-attempts: 1
     openai:
-      base-url: http://localhost:1234
-      api-key: lm-studio
+      base-url: http://localhost:8888
+
+      api-key: Unsloth Studio
       chat:
         options:
-          model: qwen3.5-4b
+          model: qwen3-16b-A3B-GGUF
           temperature: 0.2
           max-tokens: 7000
   mvc:
