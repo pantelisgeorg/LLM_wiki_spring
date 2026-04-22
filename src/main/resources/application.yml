@@ -20,14 +20,13 @@ spring:
     retry:
       max-attempts: 1
     openai:
-      base-url: http://localhost:8888
-
-      api-key:  sk-unsloth-113da9d10b168cca34e7a183c42f06bd
+      base-url: http://localhost:1234
+      api-key: lm-studio
       chat:
         options:
-          model: unsloth/gemma-4-E4B-it-GGUF
+          model: lmstudio-community/Qwen3.5-4B-GGUF
           temperature: 0.2
-          max-tokens: 800
+          max-tokens: 6000
   mvc:
     async:
       request-timeout: -1
