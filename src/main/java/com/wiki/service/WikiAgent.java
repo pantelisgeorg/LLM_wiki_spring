@@ -2,8 +2,10 @@ package com.wiki.service;
 
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.wiki.dto.ConsolidateResult;
 import com.wiki.dto.IngestResult;
 import com.wiki.dto.LintReport;
 import com.wiki.dto.LoadedSource;
@@ -20,6 +22,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * The brain. Three structured-output prompts: ingest / query / lint.
@@ -43,16 +46,28 @@ public class WikiAgent {
     private final WikiStore store;
     private final PromptLoader prompts;
     private final IngestProperties ingestProps;
+    private final QmdClient qmdClient;
+    private final ConsolidateProperties consolidateProps;
 
     /** One composed (preamble-stripped) system prompt per type, cached for process lifetime. */
     private final Map<String, String> composedSystemPrompts = new java.util.concurrent.ConcurrentHashMap<>();
 
     public WikiAgent(ChatClient.Builder chatBuilder, WikiStore store, PromptLoader prompts,
-                     IngestProperties ingestProps) {
+                     IngestProperties ingestProps, QmdClient qmdClient,
+                     ConsolidateProperties consolidateProps) {
         this.chat = chatBuilder.build();
         this.store = store;
         this.prompts = prompts;
         this.ingestProps = ingestProps;
+        this.qmdClient = qmdClient;
+        this.consolidateProps = consolidateProps;
+    }
+
+    /** One semantically-near candidate for a concept page, as returned by qmd. */
+    public record Neighbor(String path, double score, String snippet) {}
+
+    public ConsolidateProperties consolidateProps() {
+        return consolidateProps;
     }
 
     public IngestResult ingest(LoadedSource source) throws IOException {
@@ -295,6 +310,188 @@ public class WikiAgent {
         } catch (Exception e) {
             log.warn("Quality-gate call failed ({}); keeping original aggregate", e.getMessage());
             return aggregate;
+        }
+    }
+
+    /**
+     * For a concept page, ask qmd for its top semantically-near concept neighbors. Applies the
+     * cosine-floor cut, drops self/non-concept results, drops pairs already linked in either
+     * direction, and returns at most {@code neighborsPerPage} candidates.
+     */
+    public List<Neighbor> findNeighbors(String anchorPath, LinkGraph.Graph graph) {
+        try {
+            String body = store.readPage(anchorPath);
+            if (body == null || body.isBlank()) return List.of();
+            String seed = seedTextFor(body);
+
+            JsonNode struct = qmdClient.query(
+                    List.of(Map.of("type", "vec", "query", seed)),
+                    "find concept pages semantically related to " + anchorPath,
+                    consolidateProps.getCandidatesFromQmd());
+            JsonNode results = struct == null ? null : struct.path("results");
+            if (results == null || !results.isArray()) return List.of();
+
+            Set<String> alreadyLinked = new java.util.HashSet<>();
+            if (graph != null) {
+                alreadyLinked.addAll(graph.outgoing().getOrDefault(anchorPath, Set.of()));
+                alreadyLinked.addAll(graph.incoming().getOrDefault(anchorPath, Set.of()));
+            }
+
+            double floor = consolidateProps.getCosineFloor();
+            int cap = consolidateProps.getNeighborsPerPage();
+            List<Neighbor> out = new ArrayList<>();
+            for (JsonNode r : results) {
+                if (out.size() >= cap) break;
+                String path = extractPath(r);
+                if (path == null || path.equals(anchorPath)) continue;
+                if (!path.startsWith("wiki/concepts/") || !path.endsWith(".md")) continue;
+                if (alreadyLinked.contains(path)) continue;
+                double score = r.path("score").asDouble(0.0);
+                if (score < floor) continue;
+                String snippet = r.path("snippet").asText(r.path("text").asText(""));
+                out.add(new Neighbor(path, score, snippet));
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("findNeighbors for {} failed: {}", anchorPath, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /** Extract a page path from a qmd result node, tolerating either `path` or `file` field. */
+    private static String extractPath(JsonNode r) {
+        if (r == null) return null;
+        String p = r.path("path").asText("");
+        if (p.isEmpty()) p = r.path("file").asText("");
+        if (p.isEmpty()) p = r.path("uri").asText("");
+        p = p.trim();
+        // tolerate leading "wiki/" missing — qmd sometimes reports paths relative to the collection
+        if (!p.isEmpty() && !p.startsWith("wiki/")) p = "wiki/" + p;
+        return p.isEmpty() ? null : p;
+    }
+
+    /**
+     * Builds a short "aboutness" string from a page body: first heading + first ~500 chars.
+     * Sanitizes qmd query-operator chars ({@code -}, {@code +}, {@code ":`) into spaces because
+     * qmd's vec query parser rejects them (negation/required/phrase syntax).
+     */
+    static String seedTextFor(String body) {
+        if (body == null) return "";
+        String[] lines = body.split("\\R");
+        StringBuilder sb = new StringBuilder();
+        for (String l : lines) {
+            String t = l.strip();
+            if (t.startsWith("# ")) {
+                sb.append(t.substring(2)).append(". ");
+                break;
+            }
+        }
+        String rest = body.replaceAll("(?m)^#+\\s.*$", " ").replaceAll("\\s+", " ").trim();
+        sb.append(rest);
+        String seed = sb.length() > 500 ? sb.substring(0, 500) : sb.toString();
+        seed = seed.replaceAll("[\\-+\":()\\[\\]\\\\]", " ").replaceAll("\\s+", " ").trim();
+        return seed;
+    }
+
+    /**
+     * For a concept page + its qmd-vouched neighbors, ask the LLM which pairs warrant a cross-link
+     * and produce append-style edits. Enforces conservative post-parse guards — ghost-link cut,
+     * action=append only, body must contain a `[[wiki/concepts/…]]` reference, cap at neighborsPerPage.
+     * Never throws; on any failure returns an empty edits list with a rationale explaining why.
+     */
+    public ConsolidateResult consolidatePage(String anchorPath, List<Neighbor> neighbors) {
+        if (neighbors == null || neighbors.isEmpty()) {
+            return new ConsolidateResult(List.of(), "no eligible neighbors");
+        }
+        String body;
+        try {
+            body = store.readPage(anchorPath);
+        } catch (Exception e) {
+            return new ConsolidateResult(List.of(), "could not read anchor: " + e.getMessage());
+        }
+        if (body == null || body.isBlank()) {
+            return new ConsolidateResult(List.of(), "anchor body empty");
+        }
+
+        StringBuilder nbrBlock = new StringBuilder();
+        Set<String> validTargets = new java.util.HashSet<>();
+        int idx = 1;
+        for (Neighbor n : neighbors) {
+            String nbody;
+            try {
+                nbody = store.readPage(n.path());
+            } catch (Exception e) {
+                nbody = "";
+            }
+            nbrBlock.append("### Neighbor ").append(idx++).append(": ").append(n.path())
+                    .append(" (cosine ").append(String.format(java.util.Locale.ROOT, "%.2f", n.score())).append(")\n\n")
+                    .append("```\n").append(truncate(nbody, 1500)).append("\n```\n\n");
+            validTargets.add(n.path());
+        }
+
+        BeanOutputConverter<ConsolidateResult> converter = new BeanOutputConverter<>(ConsolidateResult.class, LENIENT);
+        String template = prompts.load("consolidate.txt");
+        String rendered = prompts.render(template, Map.of(
+                "pagePath", anchorPath,
+                "pageBody", truncate(body, 2000),
+                "neighbors", nbrBlock.toString().trim(),
+                "maxEdits", String.valueOf(consolidateProps.getNeighborsPerPage())
+        )).replace("{format}", converter.getFormat());
+
+        try {
+            long t0 = System.currentTimeMillis();
+            String raw = chat.prompt().user(rendered).call().content();
+            log.info("Consolidate LLM returned {} chars in {} ms for {}",
+                    raw == null ? 0 : raw.length(), System.currentTimeMillis() - t0, anchorPath);
+            String cleaned = stripFences(raw);
+            ConsolidateResult parsed = converter.convert(cleaned);
+            if (parsed == null) {
+                return new ConsolidateResult(List.of(), "parse returned null");
+            }
+
+            List<WikiEdit> kept = new ArrayList<>();
+            java.util.regex.Pattern conceptLink = java.util.regex.Pattern.compile("\\[\\[wiki/concepts/[\\w\\-./]+\\.md]]");
+            List<WikiEdit> raws = parsed.edits() == null ? List.of() : parsed.edits();
+            for (WikiEdit e : raws) {
+                if (kept.size() >= consolidateProps.getNeighborsPerPage()) break;
+                if (e == null || e.path() == null || e.body() == null) continue;
+                if (!anchorPath.equals(e.path().trim())) {
+                    log.warn("Consolidate: dropping edit with path={} (expected anchor {})", e.path(), anchorPath);
+                    continue;
+                }
+                String action = e.action() == null ? "" : e.action().trim().toLowerCase();
+                if (!"append".equals(action)) {
+                    log.warn("Consolidate: dropping non-append edit (action={}) on {}", e.action(), anchorPath);
+                    continue;
+                }
+                var m = conceptLink.matcher(e.body());
+                boolean referencesNeighbor = false;
+                while (m.find()) {
+                    if (validTargets.contains(m.group().substring(2, m.group().length() - 2))) {
+                        referencesNeighbor = true;
+                        break;
+                    }
+                }
+                if (!referencesNeighbor) {
+                    log.warn("Consolidate: dropping edit with no valid neighbor link on {}", anchorPath);
+                    continue;
+                }
+                kept.add(e);
+            }
+
+            String rationale = parsed.rationale() == null ? "" : parsed.rationale();
+            if (kept.size() != raws.size()) {
+                rationale = rationale + " [post-filter: " + raws.size() + " → " + kept.size() + "]";
+            }
+            if (!kept.isEmpty()) {
+                String preview = kept.get(0).body().replaceAll("\\s+", " ").trim();
+                if (preview.length() > 240) preview = preview.substring(0, 240) + "…";
+                log.info("Consolidate edit preview for {}: {}", anchorPath, preview);
+            }
+            return new ConsolidateResult(kept, rationale);
+        } catch (Exception e) {
+            log.warn("Consolidate call failed for {}: {}", anchorPath, e.getMessage());
+            return new ConsolidateResult(List.of(), "parse failed: " + e.getMessage());
         }
     }
 

@@ -1,9 +1,12 @@
 package com.wiki;
 
+import com.wiki.dto.ConsolidateReport;
+import com.wiki.dto.ConsolidateResult;
 import com.wiki.dto.IngestResult;
 import com.wiki.dto.LintReport;
 import com.wiki.dto.LoadedSource;
 import com.wiki.dto.QueryAnswer;
+import com.wiki.dto.WikiEdit;
 import com.wiki.service.Chunker;
 import com.wiki.service.LinkGraph;
 import com.wiki.service.RawSourceLoader;
@@ -57,6 +60,7 @@ public class WikiController {
 
     public record IngestRequest(String path, String url, Integer startChunk) {}
     public record QueryRequest(String question) {}
+    public record ConsolidateRequest(boolean apply) {}
 
     @PostMapping(value = "/ingest", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter ingest(@RequestBody IngestRequest req) {
@@ -200,6 +204,84 @@ public class WikiController {
             }
         });
         return emitter;
+    }
+
+    @PostMapping(value = "/consolidate", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter consolidate(@RequestBody(required = false) ConsolidateRequest req) {
+        // 0L = never time out; a full-wiki run can legitimately idle >30s between events while
+        // qmd's CPU reranker is thinking.
+        SseEmitter emitter = new SseEmitter(0L);
+        boolean apply = req != null && req.apply();
+        pool.submit(() -> runConsolidation(emitter, apply));
+        return emitter;
+    }
+
+    private void runConsolidation(SseEmitter emitter, boolean apply) {
+        try {
+            if (!agent.consolidateProps().isEnabled()) {
+                fail(emitter, new IllegalStateException("consolidation disabled via wiki.consolidate.enabled"));
+                return;
+            }
+            send(emitter, "status", "scanning wiki for concept pages");
+            List<String> concepts = store.listPages().stream()
+                    .filter(p -> p.startsWith("wiki/concepts/") && p.endsWith(".md"))
+                    .toList();
+            send(emitter, "status", "found " + concepts.size() + " concept pages");
+            if (concepts.isEmpty()) {
+                send(emitter, "result", new ConsolidateReport(
+                        !apply, 0, 0, List.of(), List.of(), false));
+                emitter.complete();
+                return;
+            }
+
+            var graph = linkGraph.build();
+            List<WikiEdit> proposed = new ArrayList<>();
+            List<ConsolidateReport.PerPage> perPage = new ArrayList<>();
+            int skipped = 0;
+
+            for (int i = 0; i < concepts.size(); i++) {
+                String path = concepts.get(i);
+                int n = i + 1;
+                send(emitter, "status", "page " + n + "/" + concepts.size() + ": " + path);
+                List<WikiAgent.Neighbor> neighbors = agent.findNeighbors(path, graph);
+                if (neighbors.isEmpty()) {
+                    skipped++;
+                    send(emitter, "status", "page " + n + "/" + concepts.size() + ": no eligible neighbors");
+                    perPage.add(new ConsolidateReport.PerPage(path, List.of(), List.of(), "no eligible neighbors"));
+                    continue;
+                }
+                List<String> nbrPaths = neighbors.stream().map(WikiAgent.Neighbor::path).toList();
+                send(emitter, "status", "page " + n + "/" + concepts.size()
+                        + ": " + neighbors.size() + " candidates, calling LLM");
+                ConsolidateResult r = agent.consolidatePage(path, neighbors);
+                int edits = r.edits() == null ? 0 : r.edits().size();
+                send(emitter, "status", "page " + n + "/" + concepts.size()
+                        + ": proposed " + edits + " cross-links");
+                if (r.edits() != null) proposed.addAll(r.edits());
+                perPage.add(new ConsolidateReport.PerPage(path, nbrPaths,
+                        r.edits() == null ? List.of() : r.edits(),
+                        r.rationale() == null ? "" : r.rationale()));
+            }
+
+            boolean applied = false;
+            if (apply && !proposed.isEmpty()) {
+                send(emitter, "status", "applying " + proposed.size() + " edits to disk");
+                store.applyEdits(proposed);
+                store.appendLog(store.todayLogPrefix("consolidate",
+                        proposed.size() + " edits across " + (concepts.size() - skipped) + " pages"));
+                applied = true;
+            }
+
+            int processed = concepts.size() - skipped;
+            send(emitter, "status", "done: " + processed + " processed, "
+                    + skipped + " skipped, " + proposed.size() + " proposed"
+                    + (applied ? " (applied)" : " (preview)"));
+            send(emitter, "result", new ConsolidateReport(
+                    !apply, processed, skipped, proposed, perPage, applied));
+            emitter.complete();
+        } catch (Exception e) {
+            fail(emitter, e);
+        }
     }
 
     @GetMapping("/wiki/tree")

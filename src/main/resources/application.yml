@@ -10,6 +10,11 @@ wiki:
   root: ${user.home}/llm-wiki
   search:
     max-pages: 8
+  consolidate:
+    enabled: true
+    cosine-floor: 0.40
+    neighbors-per-page: 3
+    candidates-from-qmd: 15
   ingest:
     chunk-gap-ms: 3000
     reset-every-n-chunks: 0
