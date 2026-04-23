@@ -17,6 +17,13 @@ public class PromptLoader {
         return cache.computeIfAbsent(name, this::read);
     }
 
+    public String loadOrDefault(String name, String fallbackName) {
+        if (cache.containsKey(name)) return cache.get(name);
+        var resource = new ClassPathResource("prompts/" + name);
+        if (!resource.exists()) return load(fallbackName);
+        return load(name);
+    }
+
     private String read(String name) {
         try {
             var resource = new ClassPathResource("prompts/" + name);

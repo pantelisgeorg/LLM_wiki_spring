@@ -14,6 +14,30 @@ wiki:
     chunk-gap-ms: 3000
     reset-every-n-chunks: 0
     reset-command: ""
+    classifier:
+      enabled: true
+      known-types:
+        - paper
+        - paper_simple
+        - article
+        - web
+        - youtube
+        - podcast
+        - book_chapter
+        - concept_note
+        - generic
+    quality-gate:
+      enabled: true
+      type-gates:
+        paper: [check_falsifiability, fact_check, find_logical_fallacies]
+        paper_simple: [fact_check]
+        article: [find_logical_fallacies, fact_check]
+        web: [fact_check]
+        youtube: [fact_check]
+        podcast: [fact_check]
+        book_chapter: [find_logical_fallacies]
+        concept_note: []
+        generic: [fact_check]
 
 spring:
   ai:

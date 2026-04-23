@@ -97,9 +97,13 @@ public class WikiController {
             }
             send(emitter, "status", "loaded: " + source.title() + " (" + source.text().length() + " chars)");
 
+            send(emitter, "status", "classifying source type");
+            String type = agent.classify(source);
+            send(emitter, "status", "type: " + type);
+
             if (!Chunker.shouldChunk(source.text())) {
                 send(emitter, "status", "calling LLM (this can take 30–90s on local models)");
-                IngestResult result = agent.ingest(source);
+                IngestResult result = agent.ingest(source, null, type);
                 int editCount = result.edits() == null ? 0 : result.edits().size();
                 send(emitter, "status", "applied " + editCount + " edits + 1 source summary");
                 send(emitter, "result", result);
@@ -129,7 +133,7 @@ public class WikiController {
                 LoadedSource chunkSource = new LoadedSource(chunkTitle, chunks.get(i), source.sourcePath());
                 String canonicalSourcePath = "wiki/sources/" + baseSlug + "-part" + n + ".md";
                 send(emitter, "status", "chunk " + n + "/" + chunks.size() + ": calling LLM");
-                IngestResult r = agent.ingest(chunkSource, canonicalSourcePath);
+                IngestResult r = agent.ingest(chunkSource, canonicalSourcePath, type);
                 int e = r.edits() == null ? 0 : r.edits().size();
                 totalEdits += e;
                 send(emitter, "status", "chunk " + n + "/" + chunks.size() + ": applied " + e + " edits");

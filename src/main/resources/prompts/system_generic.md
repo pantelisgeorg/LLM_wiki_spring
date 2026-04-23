@@ -1,0 +1,19 @@
+---
+includes:
+  - find_relevant_entities
+  - extract_patterns
+---
+
+## Per-type guidance: `generic`
+
+The source type was not classified confidently. Apply a neutral extraction: name entities, name concepts, capture the key claims the source makes.
+
+The source summary page MUST contain:
+
+1. **One-line tagline** — what this source is about.
+2. **`## Summary`** — 2–4 sentences on what the source argues or reports.
+3. **`## Key claims`** — 3–8 bullets of specific propositions the source makes.
+4. **`## Related`** — cross-links to other wiki pages.
+5. Original `raw/...` path at the bottom.
+
+Entity pages for named people/orgs/tools. Concept pages for distinct ideas. Under-produce rather than over-reach — if the source is thin or its genre unclear, err on the side of capturing less confidently rather than inventing structure.

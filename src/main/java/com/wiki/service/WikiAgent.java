@@ -42,15 +42,67 @@ public class WikiAgent {
     private final ChatClient chat;
     private final WikiStore store;
     private final PromptLoader prompts;
+    private final IngestProperties ingestProps;
 
-    public WikiAgent(ChatClient.Builder chatBuilder, WikiStore store, PromptLoader prompts) {
+    /** One composed (preamble-stripped) system prompt per type, cached for process lifetime. */
+    private final Map<String, String> composedSystemPrompts = new java.util.concurrent.ConcurrentHashMap<>();
+
+    public WikiAgent(ChatClient.Builder chatBuilder, WikiStore store, PromptLoader prompts,
+                     IngestProperties ingestProps) {
         this.chat = chatBuilder.build();
         this.store = store;
         this.prompts = prompts;
+        this.ingestProps = ingestProps;
     }
 
     public IngestResult ingest(LoadedSource source) throws IOException {
-        return ingest(source, null);
+        return ingest(source, null, "generic");
+    }
+
+    public IngestResult ingest(LoadedSource source, String canonicalSourcePath) throws IOException {
+        return ingest(source, canonicalSourcePath, "generic");
+    }
+
+    /**
+     * Classifies the source into one of the types configured in {@code wiki.ingest.classifier.known-types}.
+     * Returns `"generic"` when classification is disabled, when the LLM's response fails to parse,
+     * or when it names a type not in the whitelist.
+     */
+    public String classify(LoadedSource source) {
+        if (!ingestProps.getClassifier().isEnabled()) return "generic";
+        List<String> knownTypes = ingestProps.getClassifier().getKnownTypes();
+        if (knownTypes == null || knownTypes.isEmpty()) return "generic";
+
+        String preview = truncate(source.text(), 1500);
+        StringBuilder typeList = new StringBuilder();
+        for (String t : knownTypes) typeList.append("- `").append(t).append("`\n");
+
+        String template = prompts.load("classify.txt");
+        String rendered = prompts.render(template, Map.of(
+                "title", safe(source.title()),
+                "sourcePath", safe(source.sourcePath()),
+                "preview", preview,
+                "knownTypes", typeList.toString().trim()
+        ));
+
+        try {
+            long t0 = System.currentTimeMillis();
+            String raw = chat.prompt().user(rendered).call().content();
+            log.info("Classifier LLM returned in {} ms: {}", System.currentTimeMillis() - t0,
+                    raw == null ? "" : raw.strip());
+            String cleaned = stripFences(raw);
+            if (cleaned == null || cleaned.isBlank()) return "generic";
+            var node = LENIENT.readTree(cleaned);
+            String type = node.has("type") ? node.get("type").asText("") : "";
+            if (type.isBlank() || !knownTypes.contains(type)) {
+                log.warn("Classifier returned unknown type '{}', falling back to generic", type);
+                return "generic";
+            }
+            return type;
+        } catch (Exception e) {
+            log.warn("Classifier failed ({}); falling back to generic", e.getMessage());
+            return "generic";
+        }
     }
 
     /**
@@ -58,19 +110,26 @@ public class WikiAgent {
      * with it, and any `[[wiki/sources/<llm-chosen>]]` cross-links inside edit bodies are rewritten
      * to match. Used by chunked ingests to guarantee every chunk's source lands at
      * `wiki/sources/{base}-part{N}.md` regardless of slug drift.
+     *
+     * <p>{@code type} selects which `system_<type>.md` + extractors/*.md get composed into the
+     * system prompt. Unknown or missing types fall back to `system_generic.md`.
      */
-    public IngestResult ingest(LoadedSource source, String canonicalSourcePath) throws IOException {
+    public IngestResult ingest(LoadedSource source, String canonicalSourcePath, String type) throws IOException {
         String index = store.readIndex();
         String logPrefix = store.todayLogPrefix("ingest", safe(source.title()));
+        String safeType = (type == null || type.isBlank()) ? "generic" : type;
 
         BeanOutputConverter<IngestResult> converter = new BeanOutputConverter<>(IngestResult.class, LENIENT);
-        String template = prompts.load("ingest.txt");
+        String preamble = prompts.load("ingest.txt");
+        String systemBody = composeSystemPrompt(safeType);
+        String template = preamble + "\n\n---\n\n" + systemBody;
         String rendered = prompts.render(template, Map.of(
                 "index", index,
                 "title", safe(source.title()),
                 "sourcePath", safe(source.sourcePath()),
                 "text", truncate(source.text(), 40000),
-                "logPrefix", logPrefix
+                "logPrefix", logPrefix,
+                "type", safeType
         )).replace("{format}", converter.getFormat());
 
         log.info("Ingest prompt: {} chars, calling LLM…", rendered.length());
@@ -97,9 +156,146 @@ public class WikiAgent {
             result = normalizeSourcePath(result, canonicalSourcePath);
         }
 
+        result = qualityGate(result, safeType);
+
         applyIngest(result, logPrefix);
         ensureSourceIndexed(result, source);
         return result;
+    }
+
+    /**
+     * Builds the per-type system prompt: strips YAML frontmatter from `system_<type>.md`,
+     * appends each `extractors/<name>.md` listed in the `includes:` block, joined by `---` separators.
+     * Result is cached per type for process lifetime.
+     */
+    private String composeSystemPrompt(String type) {
+        return composedSystemPrompts.computeIfAbsent(type, t -> {
+            String raw = prompts.loadOrDefault("system_" + t + ".md", "system_generic.md");
+            List<String> includes = new ArrayList<>();
+            String body = parseFrontmatter(raw, includes);
+            StringBuilder sb = new StringBuilder(body);
+            for (String name : includes) {
+                try {
+                    String snippet = prompts.load("extractors/" + name + ".md");
+                    sb.append("\n\n---\n\n").append(snippet);
+                } catch (Exception e) {
+                    log.warn("Extractor snippet missing: extractors/{}.md — skipping ({})", name, e.getMessage());
+                }
+            }
+            return sb.toString();
+        });
+    }
+
+    /**
+     * Lightweight YAML-frontmatter parser: expects the file to start with `---`, an `includes:` key
+     * with a block-style list of names, then a closing `---`. Returns the body after the closing `---`
+     * and fills {@code includesOut} with the names. If no recognizable frontmatter, returns {@code raw}
+     * unchanged and leaves {@code includesOut} empty.
+     */
+    static String parseFrontmatter(String raw, List<String> includesOut) {
+        if (raw == null) return "";
+        String t = raw.stripLeading();
+        if (!t.startsWith("---")) return raw;
+        int afterOpen = t.indexOf('\n', 3);
+        if (afterOpen < 0) return raw;
+        int closeIdx = t.indexOf("\n---", afterOpen);
+        if (closeIdx < 0) return raw;
+
+        String fm = t.substring(afterOpen + 1, closeIdx);
+        boolean inIncludes = false;
+        for (String line : fm.split("\\R")) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) continue;
+            if (trimmed.startsWith("includes:")) {
+                inIncludes = true;
+                String rest = trimmed.substring("includes:".length()).trim();
+                if (rest.startsWith("[") && rest.endsWith("]")) {
+                    String inner = rest.substring(1, rest.length() - 1);
+                    for (String part : inner.split(",")) {
+                        String name = part.trim().replaceAll("^[\"']|[\"']$", "");
+                        if (!name.isEmpty()) includesOut.add(name);
+                    }
+                    inIncludes = false;
+                }
+                continue;
+            }
+            if (inIncludes) {
+                if (trimmed.startsWith("- ")) {
+                    String name = trimmed.substring(2).trim().replaceAll("^[\"']|[\"']$", "");
+                    if (!name.isEmpty()) includesOut.add(name);
+                } else if (!trimmed.startsWith("-")) {
+                    inIncludes = false;
+                }
+            }
+        }
+
+        int afterClose = t.indexOf('\n', closeIdx + 4);
+        return afterClose < 0 ? "" : t.substring(afterClose + 1);
+    }
+
+    /**
+     * Optional quality-gate pass over a candidate IngestResult. Returns the revised result, or the
+     * original on any failure (parse error, LLM error, disabled config, empty gate list).
+     * Never returns null and never returns worse quality than pre-gate.
+     */
+    public IngestResult qualityGate(IngestResult aggregate, String type) {
+        if (aggregate == null) return null;
+        if (!ingestProps.getQualityGate().isEnabled()) return aggregate;
+        List<String> gateNames = ingestProps.getQualityGate().getTypeGates()
+                .getOrDefault(type, List.of());
+        if (gateNames.isEmpty()) return aggregate;
+
+        StringBuilder gatesSection = new StringBuilder();
+        int loaded = 0;
+        for (String name : gateNames) {
+            try {
+                gatesSection.append(prompts.load("gates/" + name + ".md")).append("\n\n");
+                loaded++;
+            } catch (Exception e) {
+                log.warn("Gate snippet missing: gates/{}.md — skipping", name);
+            }
+        }
+        if (loaded == 0) return aggregate;
+
+        String aggregateJson;
+        try {
+            aggregateJson = LENIENT.writerWithDefaultPrettyPrinter().writeValueAsString(aggregate);
+        } catch (Exception e) {
+            log.warn("Quality-gate: failed to serialize candidate ({}), skipping", e.getMessage());
+            return aggregate;
+        }
+
+        BeanOutputConverter<IngestResult> converter = new BeanOutputConverter<>(IngestResult.class, LENIENT);
+        String template = prompts.load("gate.txt");
+        String rendered = prompts.render(template, Map.of(
+                "type", type,
+                "aggregate", aggregateJson,
+                "gates", gatesSection.toString().trim()
+        )).replace("{format}", converter.getFormat());
+
+        try {
+            long t0 = System.currentTimeMillis();
+            String raw = chat.prompt().user(rendered).call().content();
+            log.info("Quality-gate LLM returned {} chars in {} ms",
+                    raw == null ? 0 : raw.length(), System.currentTimeMillis() - t0);
+            String cleaned = stripFences(raw);
+            IngestResult revised = converter.convert(cleaned);
+            if (revised == null) {
+                log.warn("Quality-gate parse returned null; keeping original aggregate");
+                return aggregate;
+            }
+            int before = aggregate.edits() == null ? 0 : aggregate.edits().size();
+            int after = revised.edits() == null ? 0 : revised.edits().size();
+            if (after == 0 && before > 0) {
+                log.warn("Quality-gate dropped ALL edits ({} → 0); refusing, keeping original", before);
+                return aggregate;
+            }
+            log.info("Quality-gate: {} edits → {} edits after review", before, after);
+            return revised;
+        } catch (Exception e) {
+            log.warn("Quality-gate call failed ({}); keeping original aggregate", e.getMessage());
+            return aggregate;
+        }
     }
 
     /**
