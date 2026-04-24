@@ -285,13 +285,13 @@ let inflight = false;
 function lockActions() {
   if (inflight) return;
   inflight = true;
-  for (const id of ["btn-ingest", "btn-query", "btn-qmd", "btn-fetch", "btn-lint"]) {
+  for (const id of ["btn-ingest", "btn-query", "btn-qmd", "btn-fetch", "btn-lint", "btn-consolidate"]) {
     const b = $(id); if (b) b.disabled = true;
   }
 }
 function unlockActions() {
   inflight = false;
-  for (const id of ["btn-ingest", "btn-query", "btn-qmd", "btn-fetch", "btn-lint"]) {
+  for (const id of ["btn-ingest", "btn-query", "btn-qmd", "btn-fetch", "btn-lint", "btn-consolidate"]) {
     const b = $(id); if (b) b.disabled = false;
   }
 }
@@ -357,6 +357,10 @@ function renderResult(r) {
     renderLintReport(r.issues);
     return;
   }
+  if (r.perPage) {
+    renderConsolidateReport(r);
+    return;
+  }
   if (r.edits) {
     let md = "# Ingest result\n\n";
     const srcPath = r.sourceSummary?.path;
@@ -388,6 +392,45 @@ $("btn-query").onclick = () => {
   runSse("/api/query", {question: v});
 };
 $("btn-lint").onclick = () => runSse("/api/lint", null);
+$("btn-consolidate").onclick = () => {
+  if (inflight) return;
+  const proceed = confirm("Run consolidation preview? This scans every concept page and calls the LLM per eligible page — can take several minutes.");
+  if (!proceed) return;
+  runSse("/api/consolidate", {apply: false});
+};
+
+function renderConsolidateReport(r) {
+  const edits = r.proposedEdits || [];
+  const n = edits.length;
+  const applied = !!r.applied;
+  let md = `# Consolidate ${applied ? "applied" : "preview"}\n\n`;
+  md += `**${n} edits** across **${r.pagesProcessed}** pages · ${r.pagesSkipped} skipped (no eligible neighbors).\n\n`;
+  md += "## By page\n\n";
+  for (const pp of (r.perPage || [])) {
+    if (!pp.edits || pp.edits.length === 0) continue;
+    md += `### [${pp.path}](${pp.path})\n\n`;
+    for (const e of pp.edits) md += `- ${e.body}\n`;
+    md += "\n";
+  }
+  preview.innerHTML = marked.parse(md);
+  if (!applied && n > 0) {
+    const bar = document.createElement("div");
+    bar.style.cssText = "position:sticky;top:0;background:var(--panel);padding:8px;border-bottom:1px solid var(--border);margin:0 0 12px 0;z-index:1;";
+    const btn = document.createElement("button");
+    btn.textContent = `Apply all ${n} edits to disk`;
+    btn.style.cssText = "padding:6px 14px;background:var(--panel);color:var(--fg);border:1px solid var(--border);border-radius:4px;cursor:pointer;";
+    btn.onmouseenter = () => btn.style.borderColor = "var(--accent)";
+    btn.onmouseleave = () => btn.style.borderColor = "var(--border)";
+    btn.onclick = () => {
+      if (inflight) return;
+      if (!confirm(`Regenerate and write ~${n} cross-link edits to disk? Count may differ slightly due to LLM non-determinism.`)) return;
+      runSse("/api/consolidate", {apply: true});
+    };
+    bar.appendChild(btn);
+    preview.insertBefore(bar, preview.firstChild);
+  }
+  wireWikiLinks(preview);
+}
 $("btn-qmd").onclick = runQmd;
 $("btn-fetch").onclick = runFetch;
 

@@ -150,6 +150,25 @@ Come back later with `tail -f ~/llm-wiki/consolidate-*.out`.
 
 ---
 
+## Using it from the toolbar
+
+Toolbar has a **Consolidate** button between Lint and Graph. Two-phase flow, both phases re-run the LLM end-to-end:
+
+1. **Click Consolidate.** Confirms, then posts `{"apply": false}` and opens the same SSE stream as curl. Status events stream into the middle output pane ("page 47/149: 3 candidates, calling LLM…"). Final `result` event renders into the right pane: header with counts, per-page list of proposed edits, with a sticky top bar hosting an **Apply all N edits** button. All toolbar buttons are disabled for the duration.
+
+2. **Click Apply all N edits.** Second confirm warns that apply regenerates rather than replays the preview (count may drift). Posts `{"apply": true}` and streams the same way. The final result renders as "Consolidate applied" with no further Apply button (since `applied=true`).
+
+Important distinctions vs curl:
+
+- **Apply is not idempotent against preview.** Both phases call qmd + the LLM fresh. The prose you see in preview is illustrative, not a diff-to-be-merged. Temperature is low so drift is small — usually ±1–5 edits out of ~230.
+- **The browser tab holds the SSE.** Closing the tab does not stop the server-side pipeline — it'll finish and write. If you need to abort, restart the app.
+- **Locks the whole toolbar** for the duration. Ingest/query/lint/qmd/fetch all disabled until the stream closes. A 2-hour run on the full wiki will feel it.
+- **Same conservative guards apply.** The apply path runs through `WikiStore.applyEdits`, which additionally enforces path normalization + concept-page dedupe redirects (see [README.md](README.md) for the guard rules).
+
+The curl flow above is still the right choice for 2-hour overnight applies (browser tab would need to stay open); the button is right for preview-and-eyeball on a reasonable-sized wiki.
+
+---
+
 ## What to expect after applying
 
 **Graph gets visibly denser** — measure with:
@@ -208,7 +227,6 @@ If the 2-hour wall time becomes a pain point (not today, but might at 300+ conce
 
 ## Known non-features
 
-- **No UI button yet.** Planned for the next iteration. Today the endpoint is curl-driven. The toolbar in [index.html](src/main/resources/static/index.html) does not have a Consolidate entry.
 - **`sinceDays` filter.** Not implemented; consolidation processes every concept page unconditionally. A small addition (~10 lines) if wall-time incremental updates become valuable.
 - **Delta cache by content hash.** Not implemented. Every run re-embeds via qmd and re-calls the LLM on every concept page. At 149 concepts that's 2 hours; at 500 concepts it'd be 7 hours. If that cadence hurts, the cache is the fix.
 - **Entity and source cross-links.** Out of scope by design. Entity nodes stay hubs; source pages stay source-scoped.
@@ -224,3 +242,5 @@ If the 2-hour wall time becomes a pain point (not today, but might at 300+ conce
 - [src/main/java/com/wiki/dto/ConsolidateResult.java](src/main/java/com/wiki/dto/ConsolidateResult.java), [ConsolidateReport.java](src/main/java/com/wiki/dto/ConsolidateReport.java) — response shapes
 - [src/main/resources/prompts/consolidate.txt](src/main/resources/prompts/consolidate.txt) — the prompt
 - [src/main/resources/application.yml](src/main/resources/application.yml) — `wiki.consolidate.*` block
+- [src/main/resources/static/index.html](src/main/resources/static/index.html) — Consolidate toolbar button (`#btn-consolidate`)
+- [src/main/resources/static/app.js](src/main/resources/static/app.js) — `btn-consolidate.onclick` preview trigger, `renderConsolidateReport()` for the preview/applied render + sticky Apply button

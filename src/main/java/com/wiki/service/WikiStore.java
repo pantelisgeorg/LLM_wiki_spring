@@ -14,10 +14,13 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDate;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Owns all filesystem IO under wiki-root/. The LLM decides *what* to write;
@@ -115,6 +118,7 @@ public class WikiStore {
     /** Applies a batch of edits: skips reserved paths and paths outside wiki/, then dedupes by path (last wins). */
     public List<WikiEdit> applyEdits(List<WikiEdit> edits) throws IOException {
         if (edits == null) return List.of();
+        ConceptDupIndex dupIndex = null;
         Map<String, WikiEdit> dedup = new LinkedHashMap<>();
         for (WikiEdit e : edits) {
             if (e == null || e.path() == null) continue;
@@ -127,10 +131,124 @@ public class WikiStore {
                 log.warn("Ignoring edit outside wiki/: {}", path);
                 continue;
             }
+            String normalizedPath = normalizeWikiPath(path);
+            if (!normalizedPath.equals(path)) {
+                log.info("Normalizing wiki path to match qmd slug rule: {} -> {}", path, normalizedPath);
+                path = normalizedPath;
+                e = new WikiEdit(path, e.action(), e.body());
+            }
+            String normalizedBody = normalizeWikiRefsInBody(e.body());
+            if (normalizedBody != null && !normalizedBody.equals(e.body())) {
+                e = new WikiEdit(path, e.action(), normalizedBody);
+            }
+            if (path.startsWith("wiki/concepts/") && path.endsWith(".md") && !Files.exists(resolveSafe(path))) {
+                if (dupIndex == null) dupIndex = buildConceptDupIndex();
+                String canonical = dupIndex.findCanonical(path, e.body());
+                if (canonical != null && !canonical.equals(path)) {
+                    log.info("Redirecting duplicate concept edit: {} -> {} (forced to append)", path, canonical);
+                    e = new WikiEdit(canonical, WikiEdit.APPEND, e.body());
+                    path = canonical;
+                }
+            }
             dedup.put(path, e);
         }
         for (WikiEdit e : dedup.values()) applyEdit(e);
         return List.copyOf(dedup.values());
+    }
+
+    /** Near-duplicate lookup for new concept pages: match either normalized slug or normalized H1 title. */
+    private record ConceptDupIndex(Map<String, String> slugMap, Map<String, String> titleMap) {
+        String findCanonical(String newPath, String body) {
+            String slugKey = normalizeSlug(basenameNoExt(newPath));
+            String byTitle = null;
+            String h1 = extractH1(body);
+            if (h1 != null) {
+                String titleKey = normalizeAlnum(h1);
+                if (!titleKey.isEmpty()) byTitle = titleMap.get(titleKey);
+            }
+            String bySlug = slugMap.get(slugKey);
+            // Prefer agreement; if only one signal fires, trust it; if they disagree, skip redirect to avoid conflation.
+            if (bySlug != null && byTitle != null) return bySlug.equals(byTitle) ? bySlug : null;
+            return bySlug != null ? bySlug : byTitle;
+        }
+    }
+
+    private ConceptDupIndex buildConceptDupIndex() throws IOException {
+        Path concepts = root.resolve("wiki/concepts");
+        Map<String, String> slugMap = new HashMap<>();
+        Map<String, String> titleMap = new HashMap<>();
+        if (!Files.isDirectory(concepts)) return new ConceptDupIndex(slugMap, titleMap);
+        try (var stream = Files.list(concepts)) {
+            for (Path p : (Iterable<Path>) stream::iterator) {
+                if (!Files.isRegularFile(p) || !p.toString().endsWith(".md")) continue;
+                String rel = "wiki/concepts/" + p.getFileName();
+                slugMap.putIfAbsent(normalizeSlug(basenameNoExt(rel)), rel);
+                String h1 = extractH1(Files.readString(p, StandardCharsets.UTF_8));
+                if (h1 != null) {
+                    String k = normalizeAlnum(h1);
+                    if (!k.isEmpty()) titleMap.putIfAbsent(k, rel);
+                }
+            }
+        }
+        return new ConceptDupIndex(slugMap, titleMap);
+    }
+
+    private static String basenameNoExt(String path) {
+        int slash = path.lastIndexOf('/');
+        String base = slash >= 0 ? path.substring(slash + 1) : path;
+        return base.endsWith(".md") ? base.substring(0, base.length() - 3) : base;
+    }
+
+    private static String normalizeSlug(String s) {
+        return normalizeAlnum(s);
+    }
+
+    private static String normalizeAlnum(String s) {
+        if (s == null) return "";
+        return s.toLowerCase().replaceAll("[^a-z0-9]", "");
+    }
+
+    /** Normalize the basename of a wiki path to match qmd's handelize rule: lowercase + [^a-z0-9]+ -> '-'. */
+    static String normalizeWikiPath(String path) {
+        if (path == null) return null;
+        int slash = path.lastIndexOf('/');
+        if (slash < 0) return path;
+        String dir = path.substring(0, slash + 1);
+        String base = path.substring(slash + 1);
+        int dot = base.lastIndexOf('.');
+        String name = dot > 0 ? base.substring(0, dot) : base;
+        String ext = dot > 0 ? base.substring(dot).toLowerCase() : "";
+        String normalized = name.toLowerCase()
+                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("^-+|-+$", "");
+        if (normalized.isEmpty()) return path;
+        return dir + normalized + ext;
+    }
+
+    private static final Pattern WIKILINK_REF = Pattern.compile("\\[\\[(wiki/[^\\]]+?\\.md)]]");
+
+    /** Rewrite every `[[wiki/...md]]` reference inside a body so the target basename matches the normalization rule. */
+    static String normalizeWikiRefsInBody(String body) {
+        if (body == null) return null;
+        Matcher m = WIKILINK_REF.matcher(body);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String ref = m.group(1);
+            String norm = normalizeWikiPath(ref);
+            m.appendReplacement(sb, Matcher.quoteReplacement("[[" + norm + "]]"));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    private static String extractH1(String body) {
+        if (body == null) return null;
+        for (String line : body.split("\\R", 20)) {
+            String t = line.trim();
+            if (t.startsWith("# ")) return t.substring(2).trim();
+            if (t.startsWith("#\t")) return t.substring(2).trim();
+        }
+        return null;
     }
 
     public void applyEdit(WikiEdit edit) throws IOException {
@@ -197,8 +315,18 @@ public class WikiStore {
         String current = Files.readString(index);
         String line = entry.trim();
 
+        // Normalize any wiki path referenced in the line so it matches what we actually write to disk.
+        Matcher ref = Pattern.compile("(wiki/[\\w\\-./]+\\.md)").matcher(line);
+        StringBuilder normLine = new StringBuilder();
+        while (ref.find()) {
+            String norm = normalizeWikiPath(ref.group(1));
+            ref.appendReplacement(normLine, Matcher.quoteReplacement(norm));
+        }
+        ref.appendTail(normLine);
+        line = normLine.toString();
+
         // Path-aware dedup: if any existing line mentions the same wiki/ path, skip.
-        var m = java.util.regex.Pattern.compile("(wiki/[\\w\\-./]+\\.md)").matcher(line);
+        Matcher m = Pattern.compile("(wiki/[\\w\\-./]+\\.md)").matcher(line);
         if (m.find()) {
             String path = m.group(1);
             for (String existing : current.split("\n")) {
