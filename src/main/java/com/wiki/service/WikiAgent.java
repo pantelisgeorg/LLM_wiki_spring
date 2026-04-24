@@ -23,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
  * The brain. Three structured-output prompts: ingest / query / lint.
@@ -524,9 +525,16 @@ public class WikiAgent {
         return new IngestResult(newSummary, newEdits, newIndex, r.logLine());
     }
 
+    private static final Pattern PART_DENOMINATOR =
+            Pattern.compile("(wiki/sources/[a-z0-9-]+?-part\\d+)-\\d+(\\.md)");
+
     private static String rewriteSourceRef(String body, String oldPath, String canonicalPath) {
-        if (body == null || oldPath == null || oldPath.equals(canonicalPath)) return body;
-        return body.replace(oldPath, canonicalPath);
+        if (body == null) return null;
+        String out = body;
+        if (oldPath != null && !oldPath.equals(canonicalPath)) {
+            out = out.replace(oldPath, canonicalPath);
+        }
+        return PART_DENOMINATOR.matcher(out).replaceAll("$1$2");
     }
 
     /** LLM often omits the source's own index line. Inject it deterministically. */
