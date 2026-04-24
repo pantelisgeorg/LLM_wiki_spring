@@ -172,7 +172,8 @@ public class WikiController {
                 send(emitter, "status", "selected " + pages.size() + " pages: " + pages);
                 if (pages.isEmpty()) {
                     send(emitter, "result", new QueryAnswer(
-                            "The wiki index returned no relevant pages for that question.",
+                            "Not in the curated index (wiki/index.md). This button only searches index entries, not page contents. " +
+                            "Try the Pages filter (matches filenames) or QMD (full-text + semantic search over all pages).",
                             List.of()));
                     emitter.complete();
                     return;
