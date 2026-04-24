@@ -106,7 +106,7 @@ If the LLM ever returns more edits than allowed, or edits pointing outside the n
 **Preview** — stream status live, save full response for inspection:
 
 ```bash
-curl -sN -X POST http://localhost:8090/api/consolidate \
+curl -sN -X POST http://localhost:8080/api/consolidate \
   -H 'Content-Type: application/json' \
   -d '{"apply": false}' \
   > /tmp/consolidate.out &
@@ -126,7 +126,7 @@ Each block shows one anchor page and the cross-link paragraphs that would be app
 **Apply** — re-runs the pipeline fresh, commits to disk:
 
 ```bash
-curl -sN -X POST http://localhost:8090/api/consolidate \
+curl -sN -X POST http://localhost:8080/api/consolidate \
   -H 'Content-Type: application/json' \
   -d '{"apply": true}' \
   > /tmp/consolidate-apply.out &
@@ -139,7 +139,7 @@ Important: apply doesn't replay the preview's JSON — it re-runs qmd + LLM from
 **Background long-running apply** — don't tie up a terminal for 2 hours:
 
 ```bash
-nohup curl -sN -X POST http://localhost:8090/api/consolidate \
+nohup curl -sN -X POST http://localhost:8080/api/consolidate \
   -H 'Content-Type: application/json' \
   -d '{"apply": true}' \
   > ~/llm-wiki/consolidate-$(date +%Y%m%d).out 2>&1 &
