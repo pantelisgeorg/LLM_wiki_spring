@@ -1,6 +1,7 @@
 ---
 includes:
   - find_relevant_entities
+  - create_conceptmap
   - extract_patterns
   - extract_book_recommendations
 ---

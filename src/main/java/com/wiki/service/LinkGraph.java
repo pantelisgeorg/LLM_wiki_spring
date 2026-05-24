@@ -13,7 +13,9 @@ import java.util.regex.Pattern;
  */
 @Service
 public class LinkGraph {
-    private static final Pattern LINK = Pattern.compile("\\[\\[(wiki/[\\w\\-./]+\\.md)]]");
+    // Unicode-aware: \w in Java is ASCII-only by default, which would silently drop Greek/
+    // Cyrillic/CJK paths. \p{L}\p{N} covers letters and digits in any script.
+    private static final Pattern LINK = Pattern.compile("\\[\\[(wiki/[\\p{L}\\p{N}_\\-./]+\\.md)]]");
 
     private final WikiStore store;
 

@@ -2,7 +2,6 @@ package com.wiki.service;
 
 import com.fasterxml.jackson.core.json.JsonReadFeature;
 import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
 import com.wiki.dto.ConsolidateResult;
@@ -47,25 +46,57 @@ public class WikiAgent {
     private final WikiStore store;
     private final PromptLoader prompts;
     private final IngestProperties ingestProps;
-    private final QmdClient qmdClient;
+    private final EmbeddingService embeddings;
     private final ConsolidateProperties consolidateProps;
 
     /** One composed (preamble-stripped) system prompt per type, cached for process lifetime. */
     private final Map<String, String> composedSystemPrompts = new java.util.concurrent.ConcurrentHashMap<>();
 
     public WikiAgent(ChatClient.Builder chatBuilder, WikiStore store, PromptLoader prompts,
-                     IngestProperties ingestProps, QmdClient qmdClient,
-                     ConsolidateProperties consolidateProps) {
+                     IngestProperties ingestProps,
+                     EmbeddingService embeddings, ConsolidateProperties consolidateProps) {
         this.chat = chatBuilder.build();
         this.store = store;
         this.prompts = prompts;
         this.ingestProps = ingestProps;
-        this.qmdClient = qmdClient;
+        this.embeddings = embeddings;
         this.consolidateProps = consolidateProps;
     }
 
     /** One semantically-near candidate for a concept page, as returned by qmd. */
     public record Neighbor(String path, double score, String snippet) {}
+
+    /**
+     * When the LLM emits a connecting paragraph without the required `[[wiki/concepts/X.md]]`
+     * link, try to recover by finding which neighbor's basename appears as a Greek/English word
+     * in the body. Returns the matched neighbor's full path, or null if none found.
+     * Prefer the neighbor that scored highest in the embedding ranking, then the longest match
+     * (more specific terms win over generic ones).
+     */
+    private static String recoverNeighborFromBody(String body, List<Neighbor> neighbors) {
+        if (body == null || neighbors == null || neighbors.isEmpty()) return null;
+        String lowerBody = body.toLowerCase();
+        Neighbor best = null;
+        int bestLen = 0;
+        for (Neighbor n : neighbors) {
+            String base = basenameNoExt(n.path()).toLowerCase();   // e.g. "σοφία" or "ηλιακή-έκλειψη"
+            if (base.isEmpty()) continue;
+            // The slug uses '-' between words; the prose uses spaces. Try both.
+            String slugForm = base;
+            String proseForm = base.replace('-', ' ');
+            if (lowerBody.contains(slugForm) || lowerBody.contains(proseForm)) {
+                int len = base.length();
+                if (len > bestLen) { best = n; bestLen = len; }
+            }
+        }
+        return best == null ? null : best.path();
+    }
+
+    private static String basenameNoExt(String path) {
+        int slash = path.lastIndexOf('/');
+        String base = slash < 0 ? path : path.substring(slash + 1);
+        return base.endsWith(".md") ? base.substring(0, base.length() - 3) : base;
+    }
 
     public ConsolidateProperties consolidateProps() {
         return consolidateProps;
@@ -321,36 +352,39 @@ public class WikiAgent {
      */
     public List<Neighbor> findNeighbors(String anchorPath, LinkGraph.Graph graph) {
         try {
-            String body = store.readPage(anchorPath);
-            if (body == null || body.isBlank()) return List.of();
-            String seed = seedTextFor(body);
-
-            JsonNode struct = qmdClient.query(
-                    List.of(Map.of("type", "vec", "query", seed)),
-                    "find concept pages semantically related to " + anchorPath,
-                    consolidateProps.getCandidatesFromQmd());
-            JsonNode results = struct == null ? null : struct.path("results");
-            if (results == null || !results.isArray()) return List.of();
-
             Set<String> alreadyLinked = new java.util.HashSet<>();
             if (graph != null) {
                 alreadyLinked.addAll(graph.outgoing().getOrDefault(anchorPath, Set.of()));
                 alreadyLinked.addAll(graph.incoming().getOrDefault(anchorPath, Set.of()));
             }
-
             double floor = consolidateProps.getCosineFloor();
             int cap = consolidateProps.getNeighborsPerPage();
+
+            // Probe top-10 raw cosines (no floor, no filter) for diagnostic visibility into
+            // how text-embedding-3-small is clustering these pages, then apply the real filter.
+            List<EmbeddingService.Result> raw = embeddings.findNeighbors(
+                    anchorPath, -1.0, 10, p -> !p.equals(anchorPath));
+            if (log.isInfoEnabled()) {
+                StringBuilder sb = new StringBuilder("findNeighbors top-10 for ").append(anchorPath).append(": ");
+                for (EmbeddingService.Result r : raw) {
+                    sb.append(String.format(java.util.Locale.ROOT, "%.3f", r.score())).append("=").append(r.path()).append(" ");
+                }
+                log.info(sb.toString().trim());
+            }
+
+            List<EmbeddingService.Result> hits = embeddings.findNeighbors(
+                    anchorPath,
+                    floor,
+                    cap + alreadyLinked.size() + 4,  // headroom for the already-linked filter below
+                    path -> (path.startsWith("wiki/concepts/") || path.startsWith("wiki/entities/"))
+                            && path.endsWith(".md")
+                            && !alreadyLinked.contains(path));
+
             List<Neighbor> out = new ArrayList<>();
-            for (JsonNode r : results) {
+            for (EmbeddingService.Result r : hits) {
                 if (out.size() >= cap) break;
-                String path = extractPath(r);
-                if (path == null || path.equals(anchorPath)) continue;
-                if (!path.startsWith("wiki/concepts/") || !path.endsWith(".md")) continue;
-                if (alreadyLinked.contains(path)) continue;
-                double score = r.path("score").asDouble(0.0);
-                if (score < floor) continue;
-                String snippet = r.path("snippet").asText(r.path("text").asText(""));
-                out.add(new Neighbor(path, score, snippet));
+                String snippet = snippetOf(r.path());
+                out.add(new Neighbor(r.path(), r.score(), snippet));
             }
             return out;
         } catch (Exception e) {
@@ -359,16 +393,15 @@ public class WikiAgent {
         }
     }
 
-    /** Extract a page path from a qmd result node, tolerating either `path` or `file` field. */
-    private static String extractPath(JsonNode r) {
-        if (r == null) return null;
-        String p = r.path("path").asText("");
-        if (p.isEmpty()) p = r.path("file").asText("");
-        if (p.isEmpty()) p = r.path("uri").asText("");
-        p = p.trim();
-        // tolerate leading "wiki/" missing — qmd sometimes reports paths relative to the collection
-        if (!p.isEmpty() && !p.startsWith("wiki/")) p = "wiki/" + p;
-        return p.isEmpty() ? null : p;
+    private String snippetOf(String path) {
+        try {
+            String body = store.readPage(path);
+            if (body == null) return "";
+            String trimmed = body.replaceAll("\\s+", " ").trim();
+            return trimmed.length() > 200 ? trimmed.substring(0, 200) + "…" : trimmed;
+        } catch (Exception e) {
+            return "";
+        }
     }
 
     /**
@@ -451,7 +484,10 @@ public class WikiAgent {
             }
 
             List<WikiEdit> kept = new ArrayList<>();
-            java.util.regex.Pattern conceptLink = java.util.regex.Pattern.compile("\\[\\[wiki/concepts/[\\w\\-./]+\\.md]]");
+            // Unicode-aware: \w is ASCII-only in Java by default; without this Greek paths are
+            // invisible to the matcher. Also accept entity targets — Consolidate now bridges
+            // both concept↔concept and entity↔concept (or entity↔entity) relations.
+            java.util.regex.Pattern conceptLink = java.util.regex.Pattern.compile("\\[\\[wiki/(?:concepts|entities)/[\\p{L}\\p{N}_\\-./]+\\.md]]");
             List<WikiEdit> raws = parsed.edits() == null ? List.of() : parsed.edits();
             for (WikiEdit e : raws) {
                 if (kept.size() >= consolidateProps.getNeighborsPerPage()) break;
@@ -466,15 +502,34 @@ public class WikiAgent {
                     continue;
                 }
                 var m = conceptLink.matcher(e.body());
-                boolean referencesNeighbor = false;
+                List<String> bodyLinks = new ArrayList<>();
+                String matchedTarget = null;
                 while (m.find()) {
-                    if (validTargets.contains(m.group().substring(2, m.group().length() - 2))) {
-                        referencesNeighbor = true;
+                    String target = m.group().substring(2, m.group().length() - 2);
+                    bodyLinks.add(target);
+                    if (validTargets.contains(target)) {
+                        matchedTarget = target;
                         break;
                     }
                 }
-                if (!referencesNeighbor) {
-                    log.warn("Consolidate: dropping edit with no valid neighbor link on {}", anchorPath);
+                if (matchedTarget == null) {
+                    // Safety net: gpt-4o-mini often writes a perfect connecting paragraph but omits
+                    // the required `[[wiki/concepts/X.md]]` link. Instead of dropping the edit, try
+                    // to recover by scanning the body for a neighbor's basename (e.g. "σοφία") and
+                    // appending the corresponding link.
+                    String recovered = recoverNeighborFromBody(e.body(), neighbors);
+                    if (recovered != null) {
+                        String newBody = e.body().trim() + " [[" + recovered + "]]";
+                        e = new WikiEdit(e.path(), e.action(), newBody);
+                        log.info("Consolidate recover [auto-link] on {}: appended [[{}]] (LLM omitted link)",
+                                anchorPath, recovered);
+                        kept.add(e);
+                        continue;
+                    }
+                    String preview = e.body().replaceAll("\\s+", " ").trim();
+                    if (preview.length() > 300) preview = preview.substring(0, 300) + "…";
+                    log.warn("Consolidate drop [no valid link, no recovery] on {} — body links: {} — valid targets: {} — body: {}",
+                            anchorPath, bodyLinks, validTargets, preview);
                     continue;
                 }
                 kept.add(e);
@@ -605,7 +660,7 @@ public class WikiAgent {
 
     /** Extract the first `wiki/...md` reference from an index entry line. */
     private static String extractPath(String line) {
-        var m = java.util.regex.Pattern.compile("(wiki/[\\w\\-./]+\\.md)").matcher(line);
+        var m = java.util.regex.Pattern.compile("(wiki/[\\p{L}\\p{N}_\\-./]+\\.md)").matcher(line);
         return m.find() ? m.group(1) : null;
     }
 
@@ -696,7 +751,7 @@ public class WikiAgent {
         if (r == null || r.issues() == null) return r;
         List<LintReport.Issue> kept = new ArrayList<>();
         int dropped = 0;
-        java.util.regex.Pattern pathPat = java.util.regex.Pattern.compile("wiki/[\\w\\-./]+\\.md");
+        java.util.regex.Pattern pathPat = java.util.regex.Pattern.compile("wiki/[\\p{L}\\p{N}_\\-./]+\\.md");
         for (LintReport.Issue i : r.issues()) {
             String desc = i == null ? null : i.description();
             if (desc != null) {

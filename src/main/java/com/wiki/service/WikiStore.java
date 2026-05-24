@@ -118,8 +118,16 @@ public class WikiStore {
     /** Applies a batch of edits: skips reserved paths and paths outside wiki/, then dedupes by path (last wins). */
     public List<WikiEdit> applyEdits(List<WikiEdit> edits) throws IOException {
         if (edits == null) return List.of();
-        ConceptDupIndex dupIndex = null;
-        Map<String, WikiEdit> dedup = new LinkedHashMap<>();
+        DupIndex dupConcepts = null, dupEntities = null;
+        // Per-path accumulator: we cannot dedup blindly by path, because Consolidate emits
+        // multiple `append` edits to the same anchor (one per cross-link). Naive last-wins
+        // would silently drop all but the last paragraph. Policy:
+        //   - Multiple `append`s to the same path: keep all, in order (each appendPage call
+        //     adds a paragraph).
+        //   - Multiple `upsert`s to the same path: keep only the last (last-write-wins for
+        //     full-page rewrites — that's the LLM's final answer).
+        //   - Mix: drop preceding appends (the later upsert would overwrite them anyway).
+        Map<String, List<WikiEdit>> perPath = new LinkedHashMap<>();
         for (WikiEdit e : edits) {
             if (e == null || e.path() == null) continue;
             String path = e.path().trim();
@@ -133,7 +141,7 @@ public class WikiStore {
             }
             String normalizedPath = normalizeWikiPath(path);
             if (!normalizedPath.equals(path)) {
-                log.info("Normalizing wiki path to match qmd slug rule: {} -> {}", path, normalizedPath);
+                log.info("Normalizing wiki path: {} -> {}", path, normalizedPath);
                 path = normalizedPath;
                 e = new WikiEdit(path, e.action(), e.body());
             }
@@ -141,23 +149,57 @@ public class WikiStore {
             if (normalizedBody != null && !normalizedBody.equals(e.body())) {
                 e = new WikiEdit(path, e.action(), normalizedBody);
             }
-            if (path.startsWith("wiki/concepts/") && path.endsWith(".md") && !Files.exists(resolveSafe(path))) {
-                if (dupIndex == null) dupIndex = buildConceptDupIndex();
-                String canonical = dupIndex.findCanonical(path, e.body());
+            String dupSubdir = null;
+            if (path.startsWith("wiki/concepts/")) dupSubdir = "wiki/concepts";
+            else if (path.startsWith("wiki/entities/")) dupSubdir = "wiki/entities";
+            if (dupSubdir != null && path.endsWith(".md") && !Files.exists(resolveSafe(path))) {
+                DupIndex idx;
+                if ("wiki/concepts".equals(dupSubdir)) {
+                    if (dupConcepts == null) dupConcepts = buildDupIndex(dupSubdir);
+                    idx = dupConcepts;
+                } else {
+                    if (dupEntities == null) dupEntities = buildDupIndex(dupSubdir);
+                    idx = dupEntities;
+                }
+                String canonical = idx.findCanonical(path, e.body());
                 if (canonical != null && !canonical.equals(path)) {
-                    log.info("Redirecting duplicate concept edit: {} -> {} (forced to append)", path, canonical);
+                    log.info("Redirecting duplicate {} edit: {} -> {} (forced to append)",
+                            dupSubdir.substring("wiki/".length()), path, canonical);
                     e = new WikiEdit(canonical, WikiEdit.APPEND, e.body());
                     path = canonical;
                 }
             }
-            dedup.put(path, e);
+            perPath.computeIfAbsent(path, k -> new ArrayList<>()).add(e);
         }
-        for (WikiEdit e : dedup.values()) applyEdit(e);
-        return List.copyOf(dedup.values());
+
+        log.info("applyEdits: {} input edits → {} unique paths after normalization+dedup-redirect",
+                edits.size(), perPath.size());
+        List<WikiEdit> applied = new ArrayList<>();
+        for (var entry : perPath.entrySet()) {
+            List<WikiEdit> ordered = entry.getValue();
+            // Find the LAST upsert in this path's list — if any. Everything before it is
+            // doomed (the upsert overwrites). Everything from it onward (the upsert + any
+            // appends following) survives.
+            int lastUpsert = -1;
+            for (int i = 0; i < ordered.size(); i++) {
+                String act = ordered.get(i).action() == null ? "" : ordered.get(i).action().trim().toLowerCase();
+                if (!"append".equals(act) && !"add".equals(act)) lastUpsert = i;
+            }
+            List<WikiEdit> toApply = lastUpsert < 0 ? ordered : ordered.subList(lastUpsert, ordered.size());
+            log.info("applyEdits[{}]: {} ordered, applying {} ({})", entry.getKey(),
+                    ordered.size(), toApply.size(),
+                    toApply.stream().map(e -> e.action() + ":" + (e.body() == null ? 0 : e.body().length()) + "c").toList());
+            for (WikiEdit e : toApply) {
+                applyEdit(e);
+                applied.add(e);
+            }
+        }
+        log.info("applyEdits: total {} edits written to disk", applied.size());
+        return List.copyOf(applied);
     }
 
-    /** Near-duplicate lookup for new concept pages: match either normalized slug or normalized H1 title. */
-    private record ConceptDupIndex(Map<String, String> slugMap, Map<String, String> titleMap) {
+    /** Near-duplicate lookup for new entity/concept pages: match either normalized slug or normalized H1 title. */
+    private record DupIndex(Map<String, String> slugMap, Map<String, String> titleMap) {
         String findCanonical(String newPath, String body) {
             String slugKey = normalizeSlug(basenameNoExt(newPath));
             String byTitle = null;
@@ -166,23 +208,24 @@ public class WikiStore {
                 String titleKey = normalizeAlnum(h1);
                 if (!titleKey.isEmpty()) byTitle = titleMap.get(titleKey);
             }
-            String bySlug = slugMap.get(slugKey);
+            String bySlug = slugKey.isEmpty() ? null : slugMap.get(slugKey);
             // Prefer agreement; if only one signal fires, trust it; if they disagree, skip redirect to avoid conflation.
             if (bySlug != null && byTitle != null) return bySlug.equals(byTitle) ? bySlug : null;
             return bySlug != null ? bySlug : byTitle;
         }
     }
 
-    private ConceptDupIndex buildConceptDupIndex() throws IOException {
-        Path concepts = root.resolve("wiki/concepts");
+    private DupIndex buildDupIndex(String relSubdir) throws IOException {
+        Path subdir = root.resolve(relSubdir);
         Map<String, String> slugMap = new HashMap<>();
         Map<String, String> titleMap = new HashMap<>();
-        if (!Files.isDirectory(concepts)) return new ConceptDupIndex(slugMap, titleMap);
-        try (var stream = Files.list(concepts)) {
+        if (!Files.isDirectory(subdir)) return new DupIndex(slugMap, titleMap);
+        try (var stream = Files.list(subdir)) {
             for (Path p : (Iterable<Path>) stream::iterator) {
                 if (!Files.isRegularFile(p) || !p.toString().endsWith(".md")) continue;
-                String rel = "wiki/concepts/" + p.getFileName();
-                slugMap.putIfAbsent(normalizeSlug(basenameNoExt(rel)), rel);
+                String rel = relSubdir + "/" + p.getFileName();
+                String slugKey = normalizeSlug(basenameNoExt(rel));
+                if (!slugKey.isEmpty()) slugMap.putIfAbsent(slugKey, rel);
                 String h1 = extractH1(Files.readString(p, StandardCharsets.UTF_8));
                 if (h1 != null) {
                     String k = normalizeAlnum(h1);
@@ -190,7 +233,7 @@ public class WikiStore {
                 }
             }
         }
-        return new ConceptDupIndex(slugMap, titleMap);
+        return new DupIndex(slugMap, titleMap);
     }
 
     private static String basenameNoExt(String path) {
@@ -205,21 +248,35 @@ public class WikiStore {
 
     private static String normalizeAlnum(String s) {
         if (s == null) return "";
-        return s.toLowerCase().replaceAll("[^a-z0-9]", "");
+        // Unicode-aware: keep any letter/number from any script (Greek, Cyrillic, CJK, …),
+        // not just ASCII a-z0-9. Without this, every non-Latin slug normalizes to ""
+        // and all concepts get conflated into one canonical page.
+        return s.toLowerCase().replaceAll("[^\\p{L}\\p{N}]", "");
     }
 
-    /** Normalize the basename of a wiki path to match qmd's handelize rule: lowercase + [^a-z0-9]+ -> '-'. */
+    /**
+     * Normalize a wiki path of the form `wiki/<subdir>/<basename>`. Lowercases the basename
+     * and replaces any non-letter/non-digit chars with '-' (Unicode-aware via \p{L}\p{N}).
+     *
+     * Critically: the LLM sometimes hallucinates '/' inside the basename (e.g.
+     * "wiki/sources/Title (part 1/5).md"). We do NOT use lastIndexOf('/') — that would
+     * pick the '/' inside "1/5" and treat "wiki/sources/Title (part 1/" as the directory,
+     * creating a spurious subdirectory on disk. Instead, we anchor on the LEGITIMATE second
+     * '/' (i.e. after `wiki/<subdir>/`), then sweep everything past it into the basename.
+     */
     static String normalizeWikiPath(String path) {
         if (path == null) return null;
-        int slash = path.lastIndexOf('/');
-        if (slash < 0) return path;
-        String dir = path.substring(0, slash + 1);
-        String base = path.substring(slash + 1);
-        int dot = base.lastIndexOf('.');
-        String name = dot > 0 ? base.substring(0, dot) : base;
-        String ext = dot > 0 ? base.substring(dot).toLowerCase() : "";
+        int firstSlash = path.indexOf('/');
+        if (firstSlash < 0) return path;
+        int secondSlash = path.indexOf('/', firstSlash + 1);
+        if (secondSlash < 0) return path;
+        String dir = path.substring(0, secondSlash + 1);
+        String basename = path.substring(secondSlash + 1);  // may contain extra '/' chars
+        int dot = basename.lastIndexOf('.');
+        String name = dot > 0 ? basename.substring(0, dot) : basename;
+        String ext = dot > 0 ? basename.substring(dot).toLowerCase() : "";
         String normalized = name.toLowerCase()
-                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("[^\\p{L}\\p{N}]+", "-")
                 .replaceAll("^-+|-+$", "");
         if (normalized.isEmpty()) return path;
         return dir + normalized + ext;
@@ -342,7 +399,7 @@ public class WikiStore {
         String line = entry.trim();
 
         // Normalize any wiki path referenced in the line so it matches what we actually write to disk.
-        Matcher ref = Pattern.compile("(wiki/[\\w\\-./]+\\.md)").matcher(line);
+        Matcher ref = Pattern.compile("(wiki/[\\p{L}\\p{N}_\\-./]+\\.md)").matcher(line);
         StringBuilder normLine = new StringBuilder();
         while (ref.find()) {
             String norm = normalizeWikiPath(ref.group(1));
@@ -352,7 +409,7 @@ public class WikiStore {
         line = normLine.toString();
 
         // Path-aware dedup: if any existing line mentions the same wiki/ path, skip.
-        Matcher m = Pattern.compile("(wiki/[\\w\\-./]+\\.md)").matcher(line);
+        Matcher m = Pattern.compile("(wiki/[\\p{L}\\p{N}_\\-./]+\\.md)").matcher(line);
         if (m.find()) {
             String path = m.group(1);
             for (String existing : current.split("\n")) {

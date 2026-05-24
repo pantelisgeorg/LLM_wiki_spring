@@ -1,22 +1,16 @@
 server:
   port: 8080
 
-qmd:
-  url: http://localhost:8181/mcp
-  auto-start: true                     # probe /health on boot; if down, shell out start-command
-  start-command: "QMD_LLAMA_GPU=off qmd mcp --http --daemon"
-  # Shelled out after /api/wiki/reset; set empty to skip.
-  # `qmd update` processes deletions (removes vanished files from the index); `qmd embed` generates
-  # vector embeddings for whatever remains. Order matters — embed alone won't drop deleted docs.
-  reembed-command: "QMD_LLAMA_GPU=off qmd update && QMD_LLAMA_GPU=off qmd embed"
-
 wiki:
   root: ${user.home}/llm-wiki
   search:
     max-pages: 8
   consolidate:
     enabled: true
-    cosine-floor: 0.40
+    # OpenAI text-embedding-3-small clusters related content in the 0.3–0.6 cosine range;
+    # 0.40 was calibrated for the old EmbeddingGemma model and filtered everything out.
+    # 0.20 keeps a safety net for tightly-related but lexically-distinct Greek concepts.
+    cosine-floor: 0.20
     neighbors-per-page: 3
     candidates-from-qmd: 15
   ingest:
@@ -59,7 +53,13 @@ spring:
         options:
           model: gpt-4o-mini
           temperature: 0.2
-          max-tokens: 6000
+          # gpt-4o-mini supports up to 16384 output tokens. 6000 was cutting off ingest
+          # responses mid-page (8 entities × 1500 chars + 8 concepts × 1500 chars ≈ 6500
+          # tokens). 12000 leaves comfortable headroom.
+          max-tokens: 12000
+      embedding:
+        options:
+          model: text-embedding-3-small
   mvc:
     async:
       request-timeout: -1

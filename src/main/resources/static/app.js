@@ -240,6 +240,7 @@ async function deleteLintPage(path, liEl) {
     note.textContent = `  ✓ removed (file: ${body.fileRemoved}, index lines: ${body.indexLinesRemoved})`;
     liEl.appendChild(note);
     refreshTree();
+    refreshQmdStatus();
   } catch (e) {
     alert("Delete failed: " + e);
   }
@@ -312,6 +313,7 @@ async function readStream(res) {
     }
   }
   refreshTree();
+  refreshQmdStatus();
 }
 
 function handleEvent(chunk) {
@@ -678,41 +680,15 @@ async function refreshQmdStatus() {
     const s = await res.json();
     const n = s.totalDocuments ?? "?";
     el.innerHTML = "";
-    el.textContent = `qmd daemon: up • ${n} docs indexed`;
+    el.textContent = `search index: ${n} docs embedded`;
     el.style.color = "var(--source)";
     const cols = (s.collections || []).map(c => `${c.name} (${c.documents} docs @ ${c.path})`).join("\n");
-    el.title = `qmd MCP HTTP daemon reachable\nCollections:\n${cols || "—"}`;
+    el.title = `In-process OpenAI embeddings (text-embedding-3-small)\nCollections:\n${cols || "—"}`;
   } catch (e) {
     el.innerHTML = "";
-    const txt = document.createElement("span");
-    txt.textContent = "qmd daemon: down ";
-    el.appendChild(txt);
-    const btn = document.createElement("a");
-    btn.href = "#";
-    btn.textContent = "[Start]";
-    btn.style.color = "var(--accent)";
-    btn.onclick = ev => { ev.preventDefault(); startQmdDaemon(btn); };
-    el.appendChild(btn);
+    el.textContent = "search index: error";
     el.style.color = "var(--err)";
-    el.title = `qmd MCP HTTP daemon unreachable\nClick [Start] to launch it, or run: qmd mcp --http --daemon\n\n${e}`;
+    el.title = `Embedding service unreachable — check OPENAI_API_KEY and server logs.\n\n${e}`;
   }
 }
 
-async function startQmdDaemon(btn) {
-  btn.textContent = "[starting…]";
-  btn.style.pointerEvents = "none";
-  try {
-    const res = await fetch("/api/qmd/start", {method: "POST"});
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      btn.textContent = "[start failed]";
-      btn.title = body.error || ("HTTP " + res.status);
-      return;
-    }
-  } catch (e) {
-    btn.textContent = "[start failed]";
-    btn.title = String(e);
-    return;
-  }
-  refreshQmdStatus();
-}

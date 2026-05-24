@@ -89,19 +89,19 @@
     <label class="btn" for="file">File…</label>
     <input id="file" type="file">
     <input id="start-chunk" type="number" min="1" placeholder="start chunk"
-           title="Resume a chunked ingest from chunk N (for when LM Studio froze mid-run)"
+           title="Resume a chunked ingest from chunk N (for when the LLM call froze mid-run)"
            style="width: 110px; padding: 6px 10px; background: var(--panel); color: var(--fg);
                   border: 1px solid var(--border); border-radius: 4px;">
-    <button id="btn-ingest">Ingest</button>
-    <button id="btn-query">Query</button>
-    <button id="btn-qmd" title="Search the wiki via qmd (local hybrid BM25 + vector + rerank)">QMD</button>
-    <button id="btn-fetch" title="Fetch via qmd: glob (e.g. wiki/entities/*.md), path, or docid (#abc123)">Fetch</button>
-    <button id="btn-lint">Lint</button>
-    <button id="btn-consolidate" title="Propose cross-links across concept pages (preview, then apply)">Consolidate</button>
-    <button id="btn-graph">Graph</button>
-    <button id="btn-clear" title="Clear the right preview panel">Clear</button>
-    <button id="btn-reset" title="Delete all wiki/ pages, index, and log. Keeps raw/ sources. Cannot be undone.">Reset</button>
-    <span id="qmd-status" class="status" title="qmd MCP HTTP daemon status" style="font-size:12px; margin-left:auto;">qmd daemon: …</span>
+    <button id="btn-ingest" title="Ingest the URL / local path / picked file: chunks long sources, calls the LLM to write entity, concept, and source pages.">Ingest</button>
+    <button id="btn-query" title="Ask a question. The LLM picks pages from wiki/index.md and writes a cited answer. Use when you want a written answer.">Ask</button>
+    <button id="btn-qmd" title="Semantic search across all wiki pages via OpenAI embeddings. Returns a ranked list of pages, not an answer. Use when you want to find pages to read yourself.">Search</button>
+    <button id="btn-fetch" title="Fetch raw markdown by exact path (e.g. wiki/entities/foo.md) or glob (e.g. wiki/entities/*.md). Reads files directly off disk.">Fetch</button>
+    <button id="btn-lint" title="Audit the wiki for gaps, orphans, contradictions, and stale claims by reading the index + log.">Lint</button>
+    <button id="btn-consolidate" title="Find semantically-similar concept pages via embeddings and ask the LLM to propose cross-links between them. Preview first, then apply.">Consolidate</button>
+    <button id="btn-graph" title="Open a force-directed graph of entity/concept pages and their [[wiki/...]] cross-links. Sources are hidden by default.">Graph</button>
+    <button id="btn-clear" title="Clear the right preview panel and reset the URL hash. Does not touch any files.">Clear</button>
+    <button id="btn-reset" title="Delete every page under wiki/, plus index.md and log.md. raw/ sources are preserved. Two confirms required. Cannot be undone.">Reset</button>
+    <span id="qmd-status" class="status" title="In-process OpenAI embedding index status" style="font-size:12px; margin-left:auto;">search index: …</span>
   </header>
   <main>
     <div id="tree" class="col">

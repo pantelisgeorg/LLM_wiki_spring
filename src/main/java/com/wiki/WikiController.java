@@ -8,8 +8,8 @@ import com.wiki.dto.LoadedSource;
 import com.wiki.dto.QueryAnswer;
 import com.wiki.dto.WikiEdit;
 import com.wiki.service.Chunker;
+import com.wiki.service.EmbeddingService;
 import com.wiki.service.LinkGraph;
-import com.wiki.service.QmdClient;
 import com.wiki.service.RawSourceLoader;
 import com.wiki.service.WikiAgent;
 import com.wiki.service.WikiSearch;
@@ -41,7 +41,7 @@ public class WikiController {
     private final WikiAgent agent;
     private final WikiSearch search;
     private final LinkGraph linkGraph;
-    private final QmdClient qmd;
+    private final EmbeddingService embeddings;
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
     @Value("${wiki.ingest.chunk-gap-ms:0}")
@@ -52,13 +52,14 @@ public class WikiController {
     private String resetCommand;
 
     public WikiController(WikiStore store, RawSourceLoader loader, WikiAgent agent,
-                          WikiSearch search, LinkGraph linkGraph, QmdClient qmd) {
+                          WikiSearch search, LinkGraph linkGraph,
+                          EmbeddingService embeddings) {
         this.store = store;
         this.loader = loader;
         this.agent = agent;
         this.search = search;
         this.linkGraph = linkGraph;
-        this.qmd = qmd;
+        this.embeddings = embeddings;
     }
 
     public record IngestRequest(String path, String url, Integer startChunk) {}
@@ -113,6 +114,7 @@ public class WikiController {
                 IngestResult result = agent.ingest(source, null, type);
                 int editCount = result.edits() == null ? 0 : result.edits().size();
                 send(emitter, "status", "applied " + editCount + " edits + 1 source summary");
+                reindexQmd(emitter);
                 send(emitter, "result", result);
                 emitter.complete();
                 return;
@@ -158,6 +160,7 @@ public class WikiController {
                 }
             }
             send(emitter, "status", "done: " + totalEdits + " edits across " + chunks.size() + " chunks");
+            reindexQmd(emitter);
             send(emitter, "result", last);
             emitter.complete();
         } catch (Exception e) {
@@ -226,11 +229,12 @@ public class WikiController {
                 fail(emitter, new IllegalStateException("consolidation disabled via wiki.consolidate.enabled"));
                 return;
             }
-            send(emitter, "status", "scanning wiki for concept pages");
+            send(emitter, "status", "scanning wiki for entity + concept pages");
             List<String> concepts = store.listPages().stream()
-                    .filter(p -> p.startsWith("wiki/concepts/") && p.endsWith(".md"))
+                    .filter(p -> (p.startsWith("wiki/concepts/") || p.startsWith("wiki/entities/"))
+                            && p.endsWith(".md"))
                     .toList();
-            send(emitter, "status", "found " + concepts.size() + " concept pages");
+            send(emitter, "status", "found " + concepts.size() + " anchor pages (entities + concepts)");
             if (concepts.isEmpty()) {
                 send(emitter, "result", new ConsolidateReport(
                         !apply, 0, 0, List.of(), List.of(), false));
@@ -280,6 +284,7 @@ public class WikiController {
             send(emitter, "status", "done: " + processed + " processed, "
                     + skipped + " skipped, " + proposed.size() + " proposed"
                     + (applied ? " (applied)" : " (preview)"));
+            if (applied) reindexQmd(emitter);
             send(emitter, "result", new ConsolidateReport(
                     !apply, processed, skipped, proposed, perPage, applied));
             emitter.complete();
@@ -299,12 +304,13 @@ public class WikiController {
     }
 
     @GetMapping("/wiki/graph")
-    public Map<String, Object> graph() throws Exception {
+    public Map<String, Object> graph(@RequestParam(value = "includeSources", defaultValue = "false") boolean includeSources) throws Exception {
         LinkGraph.Graph g = linkGraph.build();
         List<Map<String, Object>> nodes = new ArrayList<>();
         Set<String> nodeIds = new HashSet<>();
         for (String p : g.pages()) {
             if (p.equals("wiki/index.md") || p.equals("wiki/log.md")) continue;
+            if (!includeSources && p.startsWith("wiki/sources/")) continue;
             String group = p.startsWith("wiki/entities/") ? "entity"
                     : p.startsWith("wiki/concepts/") ? "concept"
                     : p.startsWith("wiki/sources/")  ? "source" : "other";
@@ -328,12 +334,17 @@ public class WikiController {
         return Map.of("nodes", nodes, "edges", edges);
     }
 
-    /** Derives a kebab-case base slug from a source title, stripping any `(part N/M)` marker. */
+    /**
+     * Derives a kebab-case base slug from a source title, stripping any `(part N/M)` marker.
+     * Unicode-aware so Greek/Cyrillic/CJK titles produce meaningful slugs instead of
+     * collapsing to the literal "source" fallback (which made all multi-source chunked
+     * ingests collide on `source-partN.md`).
+     */
     static String slugifyTitle(String title) {
         if (title == null) return "source";
         String t = title.toLowerCase()
                 .replaceAll("\\(\\s*part\\s*\\d+\\s*/\\s*\\d+\\s*\\)", "")
-                .replaceAll("[^a-z0-9]+", "-")
+                .replaceAll("[^\\p{L}\\p{N}]+", "-")
                 .replaceAll("^-+|-+$", "");
         return t.isEmpty() ? "source" : t;
     }
@@ -360,10 +371,12 @@ public class WikiController {
             if (!r.fileRemoved() && r.indexLinesRemoved() == 0) {
                 return ResponseEntity.status(404).body(Map.of("error", "no such page or index entry: " + path));
             }
+            String embStatus = r.fileRemoved() ? embeddings.refresh() : "skipped (no file deleted)";
             return ResponseEntity.ok(Map.of(
                     "path", r.path(),
                     "fileRemoved", r.fileRemoved(),
-                    "indexLinesRemoved", r.indexLinesRemoved()
+                    "indexLinesRemoved", r.indexLinesRemoved(),
+                    "embeddings", embStatus
             ));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -373,18 +386,27 @@ public class WikiController {
         }
     }
 
+    /**
+     * Refresh the in-memory embedding index after a write. Used by ingest / consolidate / delete
+     * to keep search and Consolidate's neighbor lookup in sync. Never throws.
+     */
+    private void reindexQmd(SseEmitter emitter) {
+        send(emitter, "status", "refreshing embeddings…");
+        String embStatus = embeddings.refresh();
+        send(emitter, "status", "embeddings: " + embStatus);
+    }
+
     @PostMapping("/wiki/reset")
-    public ResponseEntity<?> resetWiki(@RequestParam(value = "confirm", required = false) String confirm,
-                                       @RequestParam(value = "reembed", defaultValue = "true") boolean reembed) {
+    public ResponseEntity<?> resetWiki(@RequestParam(value = "confirm", required = false) String confirm) {
         if (!"yes".equals(confirm)) {
             return ResponseEntity.badRequest().body(Map.of("error", "missing confirm=yes"));
         }
         try {
             WikiStore.ResetResult r = store.resetWiki();
-            String qmdStatus = reembed ? qmd.tryReembed() : "skipped";
+            embeddings.clear();
             return ResponseEntity.ok(Map.of(
                     "filesDeleted", r.filesDeleted(),
-                    "qmdReembed", qmdStatus
+                    "embeddings", "cleared"
             ));
         } catch (Exception e) {
             log.error("resetWiki failed", e);

@@ -1,6 +1,7 @@
 ---
 includes:
   - find_relevant_entities
+  - create_conceptmap
   - extract_patterns
 ---
 
@@ -16,4 +17,4 @@ The source summary page MUST contain:
 4. **`## Related`** — cross-links to other wiki pages.
 5. Original `raw/...` path at the bottom.
 
-Entity pages for named people/orgs/tools. Concept pages for distinct ideas. Under-produce rather than over-reach — if the source is thin or its genre unclear, err on the side of capturing less confidently rather than inventing structure.
+Entity pages for named people/orgs/tools. Concept pages for distinct ideas. Extract everything the source genuinely supports, but never invent structure that isn't there — if the source is thin, the wiki stays thin; if the source is rich, fill the cap.
