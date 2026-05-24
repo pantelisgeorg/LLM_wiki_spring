@@ -39,7 +39,7 @@ public class QmdClient {
     public QmdClient(
             @Value("${qmd.url:http://localhost:8181/mcp}") String url,
             @Value("${qmd.start-command:QMD_LLAMA_GPU=off qmd mcp --http --daemon}") String startCommand,
-            @Value("${qmd.reembed-command:QMD_LLAMA_GPU=off qmd embed}") String reembedCommand) {
+            @Value("${qmd.reembed-command:QMD_LLAMA_GPU=off qmd update && QMD_LLAMA_GPU=off qmd embed}") String reembedCommand) {
         this.url = url;
         this.startCommand = startCommand;
         this.reembedCommand = reembedCommand;

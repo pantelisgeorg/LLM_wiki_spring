@@ -5,7 +5,10 @@ qmd:
   url: http://localhost:8181/mcp
   auto-start: true                     # probe /health on boot; if down, shell out start-command
   start-command: "QMD_LLAMA_GPU=off qmd mcp --http --daemon"
-  reembed-command: "QMD_LLAMA_GPU=off qmd embed"   # shelled out after /api/wiki/reset; set empty to skip
+  # Shelled out after /api/wiki/reset; set empty to skip.
+  # `qmd update` processes deletions (removes vanished files from the index); `qmd embed` generates
+  # vector embeddings for whatever remains. Order matters — embed alone won't drop deleted docs.
+  reembed-command: "QMD_LLAMA_GPU=off qmd update && QMD_LLAMA_GPU=off qmd embed"
 
 wiki:
   root: ${user.home}/llm-wiki

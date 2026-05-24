@@ -516,6 +516,7 @@ $("btn-reset").onclick = async () => {
     currentPage = null;
     if (location.hash) history.pushState({}, "", location.pathname);
     refreshTree();
+    refreshQmdStatus();
   } catch (e) {
     appendEvent("error", "Reset failed: " + e, "error");
   }
