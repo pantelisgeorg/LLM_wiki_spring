@@ -28,6 +28,7 @@ public class QmdClient {
 
     private final String url;
     private final String startCommand;
+    private final String reembedCommand;
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(5))
             .build();
@@ -37,9 +38,44 @@ public class QmdClient {
 
     public QmdClient(
             @Value("${qmd.url:http://localhost:8181/mcp}") String url,
-            @Value("${qmd.start-command:QMD_LLAMA_GPU=off qmd mcp --http --daemon}") String startCommand) {
+            @Value("${qmd.start-command:QMD_LLAMA_GPU=off qmd mcp --http --daemon}") String startCommand,
+            @Value("${qmd.reembed-command:QMD_LLAMA_GPU=off qmd embed}") String reembedCommand) {
         this.url = url;
         this.startCommand = startCommand;
+        this.reembedCommand = reembedCommand;
+    }
+
+    /**
+     * Shell out the configured `qmd embed` command to rebuild the on-disk vector index.
+     * Used after wiki resets so qmd stops returning stale hits. Returns a human-readable status
+     * string; never throws — callers should treat failure as non-fatal (qmd is optional).
+     */
+    public String tryReembed() {
+        if (reembedCommand == null || reembedCommand.isBlank()) {
+            return "skipped (qmd.reembed-command is empty)";
+        }
+        try {
+            ProcessBuilder pb = new ProcessBuilder("bash", "-lc", reembedCommand);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            boolean finished = p.waitFor(180, java.util.concurrent.TimeUnit.SECONDS);
+            if (!finished) {
+                p.destroyForcibly();
+                log.warn("qmd reembed timed out after 180s");
+                return "timed out after 180s";
+            }
+            if (p.exitValue() != 0) {
+                String tail = new String(p.getInputStream().readAllBytes()).lines()
+                        .reduce((a, b) -> b).orElse("");
+                log.warn("qmd reembed failed (exit {}): {}", p.exitValue(), tail);
+                return "failed (exit " + p.exitValue() + "): " + tail;
+            }
+            log.info("qmd reembed OK");
+            return "ok";
+        } catch (Exception e) {
+            log.warn("qmd reembed threw: {}", e.getMessage());
+            return "failed: " + e.getMessage();
+        }
     }
 
     /** Returns true if the daemon's `/health` endpoint answers 2xx within ~2s. */

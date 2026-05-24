@@ -504,6 +504,23 @@ $("btn-clear").onclick = () => {
   if (location.hash) history.pushState({}, "", location.pathname);
 };
 
+$("btn-reset").onclick = async () => {
+  if (!confirm("Delete ALL wiki/ pages, the index, and the log?\n\nraw/ sources are kept. This cannot be undone.")) return;
+  if (!confirm("Really wipe the wiki? Type-OK confirm — last chance.")) return;
+  try {
+    const res = await fetch("/api/wiki/reset?confirm=yes", {method: "POST"});
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { appendEvent("error", "Reset failed: " + (body.error || res.status), "error"); return; }
+    appendEvent("status", `wiki reset — ${body.filesDeleted} files deleted • qmd reembed: ${body.qmdReembed}`, "status");
+    preview.innerHTML = `<em class="status">click a page or citation</em>`;
+    currentPage = null;
+    if (location.hash) history.pushState({}, "", location.pathname);
+    refreshTree();
+  } catch (e) {
+    appendEvent("error", "Reset failed: " + e, "error");
+  }
+};
+
 fileInput.onchange = () => {
   if (fileInput.files[0]) appendEvent("status", "ready: " + fileInput.files[0].name, "status");
 };

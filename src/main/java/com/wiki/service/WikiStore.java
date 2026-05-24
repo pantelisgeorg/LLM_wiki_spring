@@ -293,6 +293,32 @@ public class WikiStore {
 
     public record DeleteResult(String path, boolean fileRemoved, int indexLinesRemoved) {}
 
+    /**
+     * Wipes everything under wiki/ (LLM-owned pages, index, log) and re-seeds the empty skeleton.
+     * raw/ and CLAUDE.md are preserved.
+     */
+    public ResetResult resetWiki() throws IOException {
+        Path wiki = root.resolve("wiki");
+        int filesDeleted = 0;
+        if (Files.isDirectory(wiki)) {
+            try (var stream = Files.walk(wiki)) {
+                List<Path> entries = new ArrayList<>();
+                stream.forEach(entries::add);
+                entries.sort((a, b) -> b.getNameCount() - a.getNameCount());
+                for (Path p : entries) {
+                    if (p.equals(wiki)) continue;
+                    if (Files.isRegularFile(p)) filesDeleted++;
+                    Files.deleteIfExists(p);
+                }
+            }
+        }
+        ensureLayout();
+        log.info("resetWiki: deleted {} files under {}", filesDeleted, wiki);
+        return new ResetResult(filesDeleted);
+    }
+
+    public record ResetResult(int filesDeleted) {}
+
     private int pruneIndexLinesFor(String path) throws IOException {
         Path index = resolveSafe("wiki/index.md");
         if (!Files.exists(index)) return 0;

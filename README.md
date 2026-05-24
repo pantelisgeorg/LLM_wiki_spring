@@ -163,7 +163,7 @@ Port is a deterministic hash of the topic name, stable across runs. Override wit
 
 ## Using it
 
-The UI has one shared input at the top and a row of action buttons: **Ingest · Query · QMD · Fetch · Lint · Graph · Clear**.
+The UI has one shared input at the top and a row of action buttons: **Ingest · Query · QMD · Fetch · Lint · Consolidate · Graph · Clear · Reset**.
 
 ### Ingest
 
@@ -242,6 +242,7 @@ qmd is deliberately *not* bundled: the Java app treats it as a pre-installed pre
 - **Fuzzy search** — input above the tree sidebar, filters pages by substring as you type. `Ctrl/Cmd+K` focuses it.
 - **Outline** — a pinned strip at the top of each page preview, auto-built from `##`/`###` headings. Click to scroll.
 - **Clear** — header button that resets the right preview pane to the placeholder and strips the page hash from the URL.
+- **Reset** — header button that wipes the entire `wiki/` tree (all entity / concept / source pages, plus `index.md` and `log.md`) and re-seeds the empty skeleton. `raw/` and `CLAUDE.md` are preserved. Two confirms are required. After the wipe, the server shells out `qmd embed` (configurable via `qmd.reembed-command`; set empty to skip) so qmd stops returning stale hits. qmd failures are non-fatal — the wiki reset still succeeds and the toast surfaces the qmd status (`qmd reembed: ok | failed: … | skipped`).
 
 ### curl equivalents
 
@@ -261,6 +262,9 @@ curl -s "http://localhost:8080/api/wiki/page?path=wiki/entities/obsidian.md"
 curl -s "http://localhost:8080/api/wiki/backlinks?path=wiki/entities/obsidian.md"
 curl -s http://localhost:8080/api/wiki/graph | python3 -m json.tool | head
 curl -s -X DELETE "http://localhost:8080/api/wiki/page?path=wiki/entities/orphan.md"
+
+# Wipe wiki/ (keeps raw/) + re-embed via qmd. Skip the re-embed with &reembed=false.
+curl -s -X POST "http://localhost:8080/api/wiki/reset?confirm=yes"
 
 # qmd-backed endpoints (require qmd mcp --http --daemon on :8181)
 curl -s http://localhost:8080/api/qmd/status

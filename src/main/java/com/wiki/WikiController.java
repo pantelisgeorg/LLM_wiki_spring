@@ -9,6 +9,7 @@ import com.wiki.dto.QueryAnswer;
 import com.wiki.dto.WikiEdit;
 import com.wiki.service.Chunker;
 import com.wiki.service.LinkGraph;
+import com.wiki.service.QmdClient;
 import com.wiki.service.RawSourceLoader;
 import com.wiki.service.WikiAgent;
 import com.wiki.service.WikiSearch;
@@ -40,6 +41,7 @@ public class WikiController {
     private final WikiAgent agent;
     private final WikiSearch search;
     private final LinkGraph linkGraph;
+    private final QmdClient qmd;
     private final ExecutorService pool = Executors.newCachedThreadPool();
 
     @Value("${wiki.ingest.chunk-gap-ms:0}")
@@ -50,12 +52,13 @@ public class WikiController {
     private String resetCommand;
 
     public WikiController(WikiStore store, RawSourceLoader loader, WikiAgent agent,
-                          WikiSearch search, LinkGraph linkGraph) {
+                          WikiSearch search, LinkGraph linkGraph, QmdClient qmd) {
         this.store = store;
         this.loader = loader;
         this.agent = agent;
         this.search = search;
         this.linkGraph = linkGraph;
+        this.qmd = qmd;
     }
 
     public record IngestRequest(String path, String url, Integer startChunk) {}
@@ -366,6 +369,25 @@ public class WikiController {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
             log.error("deletePage failed", e);
+            return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/wiki/reset")
+    public ResponseEntity<?> resetWiki(@RequestParam(value = "confirm", required = false) String confirm,
+                                       @RequestParam(value = "reembed", defaultValue = "true") boolean reembed) {
+        if (!"yes".equals(confirm)) {
+            return ResponseEntity.badRequest().body(Map.of("error", "missing confirm=yes"));
+        }
+        try {
+            WikiStore.ResetResult r = store.resetWiki();
+            String qmdStatus = reembed ? qmd.tryReembed() : "skipped";
+            return ResponseEntity.ok(Map.of(
+                    "filesDeleted", r.filesDeleted(),
+                    "qmdReembed", qmdStatus
+            ));
+        } catch (Exception e) {
+            log.error("resetWiki failed", e);
             return ResponseEntity.internalServerError().body(Map.of("error", e.getMessage()));
         }
     }
