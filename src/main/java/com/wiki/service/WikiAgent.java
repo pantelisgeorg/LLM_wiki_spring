@@ -201,6 +201,20 @@ public class WikiAgent {
 
         if (canonicalSourcePath != null && !canonicalSourcePath.isBlank()) {
             result = normalizeSourcePath(result, canonicalSourcePath);
+            // Safety net: if the LLM omitted sourceSummary entirely (gpt-4o sometimes does this
+            // when entity/concept extraction dominates the response), synthesize a minimal one
+            // so the source page + index entry still exist. The body is stubby but functional;
+            // the user can edit later.
+            if (result.sourceSummary() == null || result.sourceSummary().body() == null
+                    || result.sourceSummary().body().isBlank()) {
+                String stubBody = "# " + safe(source.title()) + "\n\n"
+                        + firstParagraph(source.text()) + "\n\n"
+                        + "## Sources\n\n" + safe(source.sourcePath()) + "\n";
+                WikiEdit stub = new WikiEdit(canonicalSourcePath, WikiEdit.UPSERT, stubBody);
+                result = new IngestResult(stub, result.edits(), result.indexEntry(), result.logLine());
+                log.warn("LLM omitted sourceSummary for {}; synthesized stub at {}",
+                        source.title(), canonicalSourcePath);
+            }
         }
 
         result = qualityGate(result, safeType);
@@ -611,6 +625,19 @@ public class WikiAgent {
             if (t.startsWith("# ")) return t.substring(2).trim();
         }
         return "";
+    }
+
+    /** First non-empty paragraph of the raw source, up to ~400 chars. Used as stub body when
+     *  the LLM omits a sourceSummary. */
+    private static String firstParagraph(String text) {
+        if (text == null) return "";
+        for (String p : text.split("\\R\\R+")) {
+            String t = p.replaceAll("\\s+", " ").trim();
+            if (t.isEmpty()) continue;
+            if (t.length() > 400) t = t.substring(0, 400) + "…";
+            return t;
+        }
+        return text.length() > 400 ? text.substring(0, 400).replaceAll("\\s+", " ").trim() + "…" : text;
     }
 
     private static String extractFirstHook(String body) {

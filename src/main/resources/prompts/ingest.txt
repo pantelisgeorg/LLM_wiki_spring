@@ -17,6 +17,8 @@ You are the maintainer of a personal knowledge wiki stored as markdown files. Yo
 
 **Common failure mode under tight output budgets:** the model nails the entity quota but produces only 3–4 concepts. If that's happening, the cure is shorter concept pages (per the tiering below + extractor guidance), NOT fewer concept pages. A 3-line concept stub is more valuable than no concept page at all.
 
+**The `sourceSummary` is REQUIRED on every response — never omit it.** Even if entities and concepts consumed most of your output budget, finish with at least a minimal `sourceSummary` (tagline + 2-sentence summary + `## Sources` line referencing the raw path). Omitting it means the chunk has no source-of-record page and the index loses a top-level entry. Reserve ~300 tokens of your output budget for it before you start the entity/concept pass.
+
 **Page length is tiered by how much the source actually says** — do not stretch every page to the same size:
 
 - Main subject of the chunk / heavily-developed concept: **1200–2500 chars** — develop fully.
