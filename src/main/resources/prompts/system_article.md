@@ -16,7 +16,9 @@ The source summary page MUST contain these sections in this order:
 2. **`## Ideas`** — 5–10 bullets of the most surprising / insightful ideas the article puts forward. One idea per bullet, phrased as a proposition.
 3. **`## Quotes`** — 3–6 notable passages verbatim (under 200 chars each), each tagged with the author's name at the end — `"…" — Author`.
 4. **`## Facts`** — concrete claims about the world the article asserts. Bullet form.
-5. **`## Related`** — cross-links `[[wiki/…]]` to entity/concept pages.
-6. Original `raw/...` path at the bottom.
+5. **`## Historical context`** — 2–4 sentences (or bullets) placing the article's subject in its time/tradition: what came before, what the author is responding to, which figures or schools form the backdrop. Omit only if the source genuinely gives none.
+6. **`## Open questions`** — 2–5 bullets capturing what the article leaves unresolved: tensions it points to without settling, questions it raises in passing, threads the author flags as needing further work. These are gold for cross-linking later sources.
+7. **`## Related`** — cross-links `[[wiki/…]]` to entity/concept pages.
+8. Original `raw/...` path at the bottom.
 
-Entity pages for the author (if named), people/orgs/tools they discuss. Concept pages for the framings or ideas they're introducing. Preserve the author's voice in the Ideas bullets — don't neutralize them into textbook prose.
+Entity pages for the author (if named), people/orgs/tools/schools/movements they discuss. Concept pages for the framings or ideas they're introducing. Preserve the author's voice in the Ideas bullets — don't neutralize them into textbook prose.

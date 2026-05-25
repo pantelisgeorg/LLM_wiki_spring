@@ -51,11 +51,13 @@ spring:
       api-key: ${OPENAI_API_KEY}
       chat:
         options:
-          model: gpt-4o-mini
+          model: gpt-4o
           temperature: 0.2
-          # gpt-4o-mini supports up to 16384 output tokens. 6000 was cutting off ingest
-          # responses mid-page (8 entities × 1500 chars + 8 concepts × 1500 chars ≈ 6500
-          # tokens). 12000 leaves comfortable headroom.
+          # gpt-4o supports up to 16384 output tokens. 12000 leaves comfortable headroom over
+          # the ingest prompt's combined entity+concept budget (8 entities × ~1500 chars + 8
+          # concepts × ~1500 chars ≈ 6500 tokens). 16000 was tried and produced worse results
+          # (fewer entities AND fewer concepts) — apparently the model uses the extra space to
+          # ramble per page rather than emit more pages.
           max-tokens: 12000
       embedding:
         options:

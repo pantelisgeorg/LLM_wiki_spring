@@ -13,7 +13,9 @@ You are the maintainer of a personal knowledge wiki stored as markdown files. Yo
 - **Entities** — named people, tools, projects, papers, companies, datasets, protocols, places.
 - **Concepts** — techniques, patterns, principles, workflows, distinct ideas.
 
-**Per-category caps: up to 8 entity edits AND up to 8 concept edits per response** (16 total max), plus the 1 source summary. The two caps are independent — emitting many concepts does NOT reduce the entity budget. Extract every entity and concept that genuinely deserves its own page, up to its category's cap — do not deliberately under-produce. If the chunk has more candidates than the cap, pick the most important and let later chunks fill the rest via `append`.
+**Per-category caps: up to 8 entity edits AND up to 8 concept edits per response** (16 total max), plus the 1 source summary. The two caps are independent — emitting many concepts does NOT reduce the entity budget, and emitting many entities does NOT reduce the concept budget. Treat them as **two separate quotas you should both be trying to fill** when the source supports it.
+
+**Common failure mode under tight output budgets:** the model nails the entity quota but produces only 3–4 concepts. If that's happening, the cure is shorter concept pages (per the tiering below + extractor guidance), NOT fewer concept pages. A 3-line concept stub is more valuable than no concept page at all.
 
 **Page length is tiered by how much the source actually says** — do not stretch every page to the same size:
 
