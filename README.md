@@ -9,7 +9,7 @@ Originally spec'd from Karpathy's [`llm-wiki.md`](llm_wiki.md). See that doc for
 ## Status
 
 Working end-to-end:
-- **Ingest** — markdown / text / PDF / URL; auto-chunks long sources at `##` boundaries
+- **Ingest** — markdown / text / PDF / URL / pre-processed structured markdown; auto-chunks long sources at `##` boundaries
 - **Ask** — index-driven page selection + cited answer (was "Query")
 - **Search** — semantic search across all wiki pages via OpenAI embeddings (was "QMD"; qmd dependency removed)
 - **Fetch** — read files by exact path or glob (e.g. `wiki/entities/*.md`)
@@ -88,7 +88,8 @@ src/main/resources/
 │   │                                create_conceptmap, extract_patterns, ...)
 │   ├── gates/                    ← per-type quality checks (fact_check, find_logical_fallacies,
 │   │                                check_falsifiability)
-│   └── system_<type>.md          ← per-type system prompt (article, paper, podcast, ...)
+│   ├── system_<type>.md          ← per-type system prompt (article, paper, podcast, ...)
+   └── system_structured_markdown.md  ← preserves raw HTML tables, bypasses extraction
 ├── seed/CLAUDE.md                ← copied into wiki-root on first run
 └── static/
     ├── index.html                ← 3-pane layout + graph overlay
@@ -152,6 +153,24 @@ The UI has one shared input at the top and a row of action buttons: **Ingest · 
 ### Ingest
 
 Paste a URL, a local file path, or click **File…** and pick a file, then **Ingest**.
+
+#### Structured markdown (pre-processed pipeline output)
+
+If your source has already been through an external pipeline — e.g. PDF → Unstructured.io → chunk → table extraction → image extraction — you can ingest the resulting markdown directly without losing tables or images.
+
+The file must contain these markers (in order) so the classifier recognizes it as `structured_markdown`:
+1. A `SYSTEM INSTRUCTIONS` block at the top
+2. `## 📎 Chunk N` headers separating pre-chunked sections
+3. `<!-- TABLE START -->` / `<!-- TABLE END -->` blocks around raw HTML tables
+4. `![description](data:image/...)` or `![description](rag_images/...)` image references
+
+When classified as `structured_markdown`:
+- The `system_structured_markdown.md` prompt is used instead of the per-type extractors.
+- Raw HTML `<table>` tags are preserved (rendered via GFM `TablesExtension`).
+- Chunk headers stay intact — the wiki does NOT re-chunk.
+- Image references are preserved in the source page.
+
+**Why this exists:** Normal ingest converts everything to Ideas/Quotes/Facts bullets, which destroys table structure. Greek text inside markdown pipe tables also breaks because `|` is both a table delimiter and appears in OCR'd text. Keeping tables as raw HTML avoids both problems.
 
 The pipeline:
 1. Load → classify the source type (article / paper / podcast / …)
@@ -294,7 +313,7 @@ wiki:
     chunk-gap-ms: 3000
     classifier:
       enabled: true
-      known-types: [paper, paper_simple, article, web, youtube, podcast, book_chapter, concept_note]
+      known-types: [paper, paper_simple, article, web, youtube, podcast, book_chapter, concept_note, generic, structured_markdown]
     quality-gate:
       enabled: true
       type-gates:
@@ -386,6 +405,7 @@ You'll also want a local embedding endpoint. LM Studio has an embeddings tab —
 18. **Consolidate auto-recovery.** gpt-4o-mini frequently writes a perfect connecting paragraph between two pages but omits the required `[[wiki/concepts/X.md]]` link. `WikiAgent.recoverNeighborFromBody` scans the body for any neighbor's basename (Greek or English) and auto-appends the correct link, so the edit isn't dropped.
 19. **Language drift.** Without explicit instruction, the LLM responds in the language of the prompt (English) regardless of source language. `prompts/ingest.txt` includes a "respond in the language of the source" directive at the top.
 20. **Per-category extraction caps.** A combined "max 10 entity-or-concept edits" cap lets a concept-heavy chunk crowd out entities. The prompt now uses split caps: **up to 8 entities AND up to 8 concepts per chunk** (independent).
+21. **HTML table preservation for structured markdown.** Pre-processed markdown from external pipelines (e.g. PDF → Unstructured.io) contains raw HTML `<table>` tags. Converting these to markdown pipe tables (`| col | col |`) breaks when cell text itself contains `|` — common in OCR'd Greek. The `structured_markdown` type keeps tables as HTML and renders them via `commonmark-ext-gfm-tables` (GFM `TablesExtension`).
 
 ---
 
