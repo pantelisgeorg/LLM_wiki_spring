@@ -466,9 +466,15 @@ public class WikiController {
 
     /** Minimal CommonMark renderer; lives here to avoid an extra class file. */
     static final class MarkdownRenderer {
-        private static final Parser PARSER = Parser.builder().build();
+        private static final org.commonmark.Extension TABLES_EXT =
+                org.commonmark.ext.gfm.tables.TablesExtension.create();
+        private static final Parser PARSER = Parser.builder()
+                .extensions(java.util.List.of(TABLES_EXT))
+                .build();
         private static final org.commonmark.renderer.html.HtmlRenderer RENDERER =
-                org.commonmark.renderer.html.HtmlRenderer.builder().build();
+                org.commonmark.renderer.html.HtmlRenderer.builder()
+                .extensions(java.util.List.of(TABLES_EXT))
+                .build();
 
         static String render(String md) {
             return RENDERER.render(PARSER.parse(md));

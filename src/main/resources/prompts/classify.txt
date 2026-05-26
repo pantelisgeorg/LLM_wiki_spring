@@ -11,14 +11,16 @@ Definitions:
 - `podcast` — a podcast / interview transcript with multiple speakers.
 - `book_chapter` — a chapter or excerpt from a book: chapter heading, sustained narrative, author POV.
 - `concept_note` — the user's own note or draft — first-person, unpolished, may be outline form.
+- `structured_markdown` — pre-processed markdown from a document pipeline: contains `## 📎 Chunk N` headers, `<!-- TABLE START/END -->` blocks, image references, and a system instruction block at the top. Do NOT confuse with raw notes; this is machine-produced structured output.
 - `generic` — fallback when none of the above fit confidently.
 
 Decision rules (apply in order):
-1. If the text begins with timestamped lines (e.g. `00:01:23`) and has identifiable speakers, return `podcast` (multi-speaker) or `youtube` (single speaker / auto-captions).
-2. If the text contains an `Abstract`, `References`, or numbered citation markers and is academic in register, return `paper` (rigorous) or `paper_simple` (explainer).
-3. If the source path contains `raw/articles/` and the text is longform, return `article`; if shorter / URL-like, return `web`.
-4. If the source path ends in `.md` and the content is first-person and unpolished, return `concept_note`.
-5. If unsure, return `generic`.
+1. If the text begins with a block containing `SYSTEM INSTRUCTIONS` AND contains `## 📎 Chunk` headers AND contains `<!-- TABLE START -->` markers, return `structured_markdown`.
+2. If the text begins with timestamped lines (e.g. `00:01:23`) and has identifiable speakers, return `podcast` (multi-speaker) or `youtube` (single speaker / auto-captions).
+3. If the text contains an `Abstract`, `References`, or numbered citation markers and is academic in register, return `paper` (rigorous) or `paper_simple` (explainer).
+4. If the source path contains `raw/articles/` and the text is longform, return `article`; if shorter / URL-like, return `web`.
+5. If the source path ends in `.md` and the content is first-person and unpolished, return `concept_note`.
+6. If unsure, return `generic`.
 
 Source metadata:
 - Title: {{title}}

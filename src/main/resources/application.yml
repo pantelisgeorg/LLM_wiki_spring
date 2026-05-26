@@ -29,6 +29,7 @@ wiki:
         - book_chapter
         - concept_note
         - generic
+        - structured_markdown
     quality-gate:
       enabled: true
       type-gates:
@@ -41,6 +42,7 @@ wiki:
         book_chapter: [find_logical_fallacies]
         concept_note: []
         generic: [fact_check]
+        structured_markdown: []
 
 spring:
   ai:
