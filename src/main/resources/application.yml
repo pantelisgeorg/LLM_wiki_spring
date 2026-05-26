@@ -2,7 +2,7 @@ server:
   port: 8080
 
 wiki:
-  root: ${user.home}/llm-wiki
+  root: /home/george/Desktop/multi-modal-rag/multi-modal-rag/llm-wiki
   search:
     max-pages: 8
   consolidate:
@@ -28,8 +28,8 @@ wiki:
         - podcast
         - book_chapter
         - concept_note
-        - generic
         - structured_markdown
+        - generic
     quality-gate:
       enabled: true
       type-gates:
@@ -41,8 +41,8 @@ wiki:
         podcast: [fact_check]
         book_chapter: [find_logical_fallacies]
         concept_note: []
-        generic: [fact_check]
         structured_markdown: []
+        generic: [fact_check]
 
 spring:
   ai:
@@ -60,7 +60,7 @@ spring:
           # concepts × ~1500 chars ≈ 6500 tokens). 16000 was tried and produced worse results
           # (fewer entities AND fewer concepts) — apparently the model uses the extra space to
           # ramble per page rather than emit more pages.
-          max-tokens: 12000
+          max-tokens: 16000
       embedding:
         options:
           model: text-embedding-3-small
