@@ -24,7 +24,10 @@ import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Turns any supported source (.md/.txt/.pdf/.html/url/image) into plain text.
@@ -49,6 +52,7 @@ public class RawSourceLoader {
 
         if (lower.endsWith(".md") || lower.endsWith(".txt")) {
             String text = Files.readString(file, StandardCharsets.UTF_8);
+            text = processInlineImages(text, slugify(stripExt(name)));
             return new LoadedSource(stripExt(name), text, file.toString());
         }
 
@@ -96,6 +100,7 @@ public class RawSourceLoader {
         if (lower.endsWith(".md") || lower.endsWith(".txt")) {
             Path saved = store.saveRawBytes("articles", slug, extOf(filename), bytes);
             String text = new String(bytes, StandardCharsets.UTF_8);
+            text = processInlineImages(text, slug);
             return new LoadedSource(stripExt(filename), text, saved.toString());
         }
         if (lower.endsWith(".pdf")) {
@@ -121,11 +126,65 @@ public class RawSourceLoader {
         }
     }
 
+    /**
+     * Pattern that matches a markdown image whose URL is a base64 data URI:
+     * `![alt](data:image/<type>;base64,<data>)`. The base64 body is constrained to a
+     * non-overlapping character class so the regex stays linear on multi-MB inputs.
+     */
+    private static final Pattern INLINE_DATA_IMAGE = Pattern.compile(
+            "!\\[([^\\]]*)\\]\\(data:image/(png|jpe?g|gif|webp);base64,([A-Za-z0-9+/=\\s]+?)\\)");
+
+    /**
+     * Extracts every inline `data:image/...;base64,...` embedded in markdown, saves the
+     * decoded bytes under raw/assets/, captions the image with the vision LLM, and
+     * replaces the inline blob with a plain markdown image reference + the caption.
+     *
+     * Without this step, the chunker carries multi-MB base64 strings into every chunk
+     * and the LLM call OOMs the server after a couple chunks.
+     */
+    private String processInlineImages(String text, String sourceSlug) {
+        if (text == null || text.isEmpty() || !text.contains("data:image/")) return text;
+        Matcher m = INLINE_DATA_IMAGE.matcher(text);
+        StringBuilder out = new StringBuilder(text.length());
+        int idx = 0;
+        while (m.find()) {
+            idx++;
+            String alt = m.group(1);
+            String type = m.group(2).toLowerCase();
+            String b64 = m.group(3).replaceAll("\\s+", "");
+            String ext = "jpg".equals(type) ? ".jpeg" : "." + type;
+            String mime = "image/" + ("jpg".equals(type) ? "jpeg" : type);
+            String replacement;
+            try {
+                byte[] bytes = Base64.getDecoder().decode(b64);
+                String assetSlug = sourceSlug + "-img-" + idx;
+                Path saved = store.saveRawBytes("assets", assetSlug, ext, bytes);
+                String caption = captionImage(bytes, mime);
+                // Absolute URL so the same `![](…)` line renders wherever the LLM copies it.
+                String url = "/api/wiki/asset?path=raw/assets/" + assetSlug + ext;
+                String displayAlt = alt == null || alt.isBlank() ? "Image " + idx : alt;
+                // Inline replacement: image ref + vision-LLM caption so the ingest LLM has
+                // descriptive context when deciding which entity/concept page the image
+                // belongs on. The caption stays adjacent and rides through chunking.
+                replacement = "![" + displayAlt + "](" + url + ")\n\n" + caption;
+                log.info("Extracted inline image {} from {} -> {}", idx, sourceSlug, saved);
+            } catch (Exception e) {
+                log.warn("Failed to process inline image {} in {}: {}", idx, sourceSlug, e.toString());
+                replacement = "![" + (alt == null ? "" : alt) + "](image-omitted)";
+            }
+            m.appendReplacement(out, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
     private String captionImage(byte[] bytes, String mime) {
         Media media = new Media(MimeType.valueOf(mime), new ByteArrayResource(bytes));
         UserMessage userMessage = new UserMessage(
-                "Describe this image in detail. If there is any visible text, transcribe it verbatim. "
-                        + "Output format: first a one-paragraph caption, then a '## Text' section with any transcribed text.",
+                "Describe this image in detail. Output format:\n"
+                        + "1. `## Caption (EN)` — one paragraph in English.\n"
+                        + "2. `## Caption (EL)` — the same caption in Greek (Ελληνικά).\n"
+                        + "3. `## Text` — verbatim transcription of any text visible in the image (in its original language). Omit if no text.",
                 List.of(media));
         String result = chatClient.prompt(new Prompt(userMessage)).call().content();
         return result == null ? "" : result;

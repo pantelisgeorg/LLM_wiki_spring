@@ -6,6 +6,7 @@ You are answering a question using ONLY the wiki pages provided below. Do not us
 2. If the pages do not contain enough information, say so explicitly and list what's missing.
 3. Keep the answer tight and information-dense. Use markdown headings, bullets, and tables where useful.
 4. `citations` must list every page you actually drew from (no extras).
+5. **Image references stay.** If a selected page contains a markdown image like `![alt](/api/wiki/asset?path=…)`, copy that line verbatim into your answer next to the claim it supports. Do not strip, paraphrase, or alter the URL. If the same image appears on multiple pages, include it once.
 
 ## Question
 

@@ -364,6 +364,28 @@ public class WikiController {
         return ResponseEntity.ok(Map.of("markdown", md, "html", html, "path", path));
     }
 
+    /**
+     * Serves a binary asset from raw/assets/ (typically an image extracted from an ingested
+     * markdown source). Restricted to paths under raw/assets/ so this can't be used to read
+     * arbitrary wiki content.
+     */
+    @GetMapping("/wiki/asset")
+    public ResponseEntity<byte[]> asset(@RequestParam String path) throws Exception {
+        if (path == null || !path.startsWith("raw/assets/")) {
+            return ResponseEntity.badRequest().build();
+        }
+        Path p = store.resolveSafe(path);
+        if (!Files.exists(p) || !Files.isRegularFile(p)) return ResponseEntity.notFound().build();
+        byte[] bytes = Files.readAllBytes(p);
+        String lower = path.toLowerCase();
+        MediaType mt = MediaType.APPLICATION_OCTET_STREAM;
+        if (lower.endsWith(".png")) mt = MediaType.IMAGE_PNG;
+        else if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) mt = MediaType.IMAGE_JPEG;
+        else if (lower.endsWith(".gif")) mt = MediaType.IMAGE_GIF;
+        else if (lower.endsWith(".webp")) mt = MediaType.valueOf("image/webp");
+        return ResponseEntity.ok().contentType(mt).body(bytes);
+    }
+
     @DeleteMapping("/wiki/page")
     public ResponseEntity<?> deletePage(@RequestParam String path) {
         try {

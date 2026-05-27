@@ -52,6 +52,10 @@ Each entity/concept page gets its own `edits` entry with a full `body` (even if 
 - Source summary pages contain: one-line tagline, 3–8 key claims as bullets, `## Related` cross-links, and the original `raw/...` path at the bottom. The per-type guidance below may add further section requirements for the source page.
 - Prefer updating an existing page over creating a duplicate. Check the current index before picking slugs.
 
+## Image references — preserve verbatim
+
+When the source chunk contains markdown image references like `![alt](/api/wiki/asset?path=raw/assets/…)`, those references are real assets extracted at ingest. **Copy each `![alt](url)` line verbatim** into the body of the page where the image belongs (typically the entity or concept the image depicts, based on the surrounding text). Place the image near the relevant paragraph, not at the bottom. Never paraphrase, never invent paths, never strip image markdown from a page's body. The source summary page should include any image whose subject isn't a single named entity (overview photos, scene illustrations).
+
 ## `indexEntry` format
 
 One line per newly-created page, **exactly** in this format (no `[[…]]` syntax):

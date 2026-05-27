@@ -718,6 +718,7 @@ public class WikiAgent {
         return answer;
     }
 
+
     public LintReport lint() throws IOException {
         BeanOutputConverter<LintReport> converter = new BeanOutputConverter<>(LintReport.class, LENIENT);
 
