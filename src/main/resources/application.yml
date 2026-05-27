@@ -2,7 +2,7 @@ server:
   port: 8080
 
 wiki:
-  root: /home/george/Desktop/multi-modal-rag/multi-modal-rag/llm-wiki
+  root: /home/george/Desktop/rag_systems/llm-wiki
   search:
     max-pages: 8
   consolidate:
