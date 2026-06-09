@@ -45,6 +45,7 @@ Each entity/concept page gets its own `edits` entry with a full `body` (even if 
 6. **No ghost links.** Every `[[wiki/…]]` cross-link inside any page body MUST point at either (a) a path you're producing an edit for in THIS response, or (b) a path already listed in the current index shown below. If you want to reference a concept that doesn't exist yet, add it to `edits` as a proper page — don't just link to it.
 7. **Actions:** `action` MUST be exactly `upsert` (write/overwrite the whole page) or `append` (append to existing page). Default to `upsert`.
 8. **Ground truth:** every claim on an entity/concept page must be substantiated by the source. Do not invent.
+9. **Tables are mandatory and verbatim — this rule OVERRIDES the per-type format below.** If the source contains a table (an HTML `<table>` block, or rows delimited by `|`), you MUST reproduce that table as a raw HTML `<table>…</table>` block inside the body of exactly one page — the entity, concept, or source-summary page the table most directly describes. This is REQUIRED even when the per-type guidance prescribes a fixed section layout (e.g. Ideas/Quotes/Facts) that has no table slot: add the `<table>` to the most relevant page anyway. **NEVER summarize, paraphrase, or flatten a table into prose or bullets** — that destroys the row/column structure and is the single worst failure mode of this ingest. Convert any `|`-delimited table to HTML (pipe tables break on `|` characters inside Greek cells); preserve every row and cell exactly.
 
 ## Page conventions
 
@@ -55,6 +56,14 @@ Each entity/concept page gets its own `edits` entry with a full `body` (even if 
 ## Image references — preserve verbatim
 
 When the source chunk contains markdown image references like `![alt](/api/wiki/asset?path=raw/assets/…)`, those references are real assets extracted at ingest. **Copy each `![alt](url)` line verbatim** into the body of the page where the image belongs (typically the entity or concept the image depicts, based on the surrounding text). Place the image near the relevant paragraph, not at the bottom. Never paraphrase, never invent paths, never strip image markdown from a page's body. The source summary page should include any image whose subject isn't a single named entity (overview photos, scene illustrations).
+
+## Tables — preserve verbatim as HTML
+
+When the source chunk contains a table, **copy the entire `<table>…</table>` block verbatim** into the body of the page it belongs to (the entity, concept, or source summary the table describes). Place it near the relevant paragraph, not at the bottom.
+
+- **Never rewrite a table into prose, bullets, Ideas/Quotes/Facts, or any other format — that destroys the row/column structure the table exists to capture.**
+- **Keep tables as raw HTML `<table>` tags.** If the source provides a markdown pipe table (`| col | col |`), convert it to an equivalent `<table>` block — do NOT keep it as a pipe table. Pipe tables break when a cell contains a `|` character (common in Greek text), causing columns to split wrong and cells to appear empty; HTML cells are immune.
+- Preserve every row and cell exactly as written. Never invent, drop, merge, or reorder rows.
 
 ## `indexEntry` format
 

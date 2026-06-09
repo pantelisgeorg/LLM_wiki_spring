@@ -110,8 +110,12 @@ public class WikiController {
             send(emitter, "status", "type: " + type);
 
             if (!Chunker.shouldChunk(source.text())) {
+                String chunkType = typeForChunk(source.text(), type);
+                if (!chunkType.equals(type)) {
+                    send(emitter, "status", "table detected → using " + chunkType + " extraction");
+                }
                 send(emitter, "status", "calling LLM (this can take 30–90s on local models)");
-                IngestResult result = agent.ingest(source, null, type);
+                IngestResult result = agent.ingest(source, null, chunkType);
                 int editCount = result.edits() == null ? 0 : result.edits().size();
                 send(emitter, "status", "applied " + editCount + " edits + 1 source summary");
                 reindexQmd(emitter);
@@ -141,8 +145,13 @@ public class WikiController {
                 String chunkTitle = source.title() + " (part " + n + "/" + chunks.size() + ")";
                 LoadedSource chunkSource = new LoadedSource(chunkTitle, chunks.get(i), source.sourcePath());
                 String canonicalSourcePath = "wiki/sources/" + baseSlug + "-part" + n + ".md";
+                String chunkType = typeForChunk(chunks.get(i), type);
+                if (!chunkType.equals(type)) {
+                    send(emitter, "status", "chunk " + n + "/" + chunks.size()
+                            + ": table detected → using " + chunkType + " extraction");
+                }
                 send(emitter, "status", "chunk " + n + "/" + chunks.size() + ": calling LLM");
-                IngestResult r = agent.ingest(chunkSource, canonicalSourcePath, type);
+                IngestResult r = agent.ingest(chunkSource, canonicalSourcePath, chunkType);
                 int e = r.edits() == null ? 0 : r.edits().size();
                 totalEdits += e;
                 send(emitter, "status", "chunk " + n + "/" + chunks.size() + ": applied " + e + " edits");
@@ -347,6 +356,23 @@ public class WikiController {
                 .replaceAll("[^\\p{L}\\p{N}]+", "-")
                 .replaceAll("^-+|-+$", "");
         return t.isEmpty() ? "source" : t;
+    }
+
+    /**
+     * Per-chunk ingest-type override. When a chunk contains a table — a raw HTML `<table>` block
+     * or a `<!-- TABLE START -->` pipeline marker — force the `structured_markdown` extractor for
+     * that chunk regardless of the document-level classification. That prompt is the only one that
+     * preserves tables verbatim as HTML; every other type (article/generic/…) rewrites content into
+     * Ideas/Quotes/Facts prose, which flattens tables and destroys their row/column structure.
+     * Tables rarely appear in the first 1500 chars the classifier sees, so document-level
+     * classification can't catch them — this per-chunk scan can.
+     */
+    static String typeForChunk(String chunkText, String docType) {
+        if (chunkText == null) return docType;
+        if (chunkText.contains("<table") || chunkText.contains("<!-- TABLE START -->")) {
+            return "structured_markdown";
+        }
+        return docType;
     }
 
     private static String labelOf(String path) {
