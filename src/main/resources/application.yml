@@ -2,7 +2,7 @@ server:
   port: 8080
 
 wiki:
-  root: /home/george/Desktop/rag_systems/llm-wiki
+  root: /home/george/Desktop/llm-wiki
   search:
     max-pages: 8
   consolidate:
@@ -53,8 +53,8 @@ spring:
       api-key: ${OPENAI_API_KEY}
       chat:
         options:
-          model: gpt-4o
-          temperature: 0.2
+          model: gpt-4.1-mini-2025-04-14
+          temperature: 0.4
           # gpt-4o supports up to 16384 output tokens. 12000 leaves comfortable headroom over
           # the ingest prompt's combined entity+concept budget (8 entities × ~1500 chars + 8
           # concepts × ~1500 chars ≈ 6500 tokens). 16000 was tried and produced worse results
